@@ -14,7 +14,8 @@ namespace RevitDwgExploder.Commands;
 [Regeneration(RegenerationOption.Manual)]
 public class ExplodeDwgCommand : IExternalCommand
 {
-	private const double MinTextSizeFeet = 1.0 / 768.0;
+	/// <summary>Mínimo de respaldo (0.4 mm) si no se puede averiguar el mínimo real que acepta Revit.</summary>
+	private const double FallbackMinTextSizeFeet = 1.0 / 768.0;
 
 	private const double MaxTextSizeFeet = 1.0;
 
@@ -80,7 +81,9 @@ public class ExplodeDwgCommand : IExternalCommand
 						break;
 				}
 
-				if (status == DwgTextImporter.ReadStatus.Ok && texts.Count > 0)
+				// Si los textos leídos del DWG no caen sobre el CAD (unidades o escala de inserción distintas),
+				// se descartan y se usa la reexportación, que ya viene a la escala real del modelo.
+				if (status == DwgTextImporter.ReadStatus.Ok && texts.Count > 0 && FractionInside(texts, instance, view) >= 0.5)
 				{
 					textsByInstance[instance.Id] = (texts, false);
 					continue;
@@ -98,7 +101,6 @@ public class ExplodeDwgCommand : IExternalCommand
 		}
 
 		// 2) Crear la geometría y los textos nativos en una sola transacción (un solo "deshacer").
-		var textTypeCache = new TextNoteTypeCache(doc, view.Scale);
 		var createdTextKeys = new HashSet<string>(StringComparer.Ordinal);
 		using (var tx = new Transaction(doc, "Explotar DWGs a Detail Lines"))
 		{
@@ -107,6 +109,12 @@ public class ExplodeDwgCommand : IExternalCommand
 			failureOptions.SetClearAfterRollback(true);
 			tx.SetFailureHandlingOptions(failureOptions);
 			tx.Start();
+
+			// Textos del DWG más pequeños que lo que Revit permite a la escala de la vista: se ofrece
+			// ajustar la escala de la vista para que conserven su tamaño relativo al dibujo.
+			double minTextSize = TextNoteTypeCache.ProbeMinimumTextSize(doc);
+			AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats);
+			var textTypeCache = new TextNoteTypeCache(doc, view.Scale, minTextSize);
 
 			var lineStyles = new LineStyleMapper(doc);
 			var geometryOptions = new Options
@@ -124,6 +132,11 @@ public class ExplodeDwgCommand : IExternalCommand
 					if (!createdTextKeys.Add(TextKey(entry)))
 					{
 						continue;
+					}
+
+					if (textTypeCache.IsBelowMinimum(entry.HeightFeet))
+					{
+						stats.ClampedTexts++;
 					}
 
 					if (CreateTextNote(doc, view, entry, textTypeCache))
@@ -183,6 +196,9 @@ public class ExplodeDwgCommand : IExternalCommand
 		public int CreatedStyles;
 		public int CreatedPatterns;
 		public int PatternedLines;
+		public int OldScale;
+		public int NewScale;
+		public int ClampedTexts;
 	}
 
 	private static void ShowSummary(Stats s)
@@ -200,6 +216,16 @@ public class ExplodeDwgCommand : IExternalCommand
 		{
 			styles += $"\nLíneas con tipo de línea leído del DWG original: {s.PatternedLines} (patrones de línea creados: {s.CreatedPatterns}).";
 		}
+		if (s.NewScale > 0)
+		{
+			styles += $"\nEscala de la vista cambiada de 1:{s.OldScale} a 1:{s.NewScale} para que los textos conserven el tamaño del DWG.";
+		}
+
+		if (s.ClampedTexts > 0)
+		{
+			styles += $"\n{s.ClampedTexts} texto(s) quedaron algo más grandes que en el DWG porque Revit no admite un tamaño menor a esta escala de vista.";
+		}
+
 		string ocr = s.OcrTexts > 0
 			? "\n\nOjo: hubo textos creados por OCR (reconocimiento aproximado). Conviene verificarlos."
 			: string.Empty;
@@ -223,7 +249,7 @@ public class ExplodeDwgCommand : IExternalCommand
 			return false;
 		}
 
-		var options = new TextNoteOptions(types.Get(entry.HeightFeet, entry.WidthFactor, entry.FontName))
+		var options = new TextNoteOptions(types.Get(entry.HeightFeet, entry.WidthFactor, entry.FontName, entry.Bold))
 		{
 			HorizontalAlignment = entry.AnchorH switch
 			{
@@ -273,6 +299,95 @@ public class ExplodeDwgCommand : IExternalCommand
 		return e.Text + "|" + Math.Round(e.Position.X / 0.01) + "|" + Math.Round(e.Position.Y / 0.01);
 	}
 
+	/// <summary>Fracción de textos que caen dentro (con margen) de la caja del CAD en la vista.</summary>
+	private static double FractionInside(List<DwgTextImporter.DwgTextEntry> texts, ImportInstance instance, View view)
+	{
+		BoundingBoxXYZ bbox = instance.get_BoundingBox(view);
+		if (bbox == null || texts.Count == 0)
+		{
+			return 1.0;
+		}
+
+		double marginX = (bbox.Max.X - bbox.Min.X) * 0.1;
+		double marginY = (bbox.Max.Y - bbox.Min.Y) * 0.1;
+		int inside = texts.Count(t => t.Position != null
+			&& t.Position.X >= bbox.Min.X - marginX && t.Position.X <= bbox.Max.X + marginX
+			&& t.Position.Y >= bbox.Min.Y - marginY && t.Position.Y <= bbox.Max.Y + marginY);
+		return (double)inside / texts.Count;
+	}
+
+	/// <summary>
+	/// Si una parte importante de los textos del DWG quedaría por debajo del tamaño mínimo que admite
+	/// Revit a la escala actual de la vista (DWG pequeño o insertado a escala reducida), propone cambiar
+	/// la escala de la vista a una en la que todos conserven su tamaño relativo al dibujo.
+	/// </summary>
+	private static void AdjustViewScaleIfNeeded(View view, IEnumerable<DwgTextImporter.DwgTextEntry> allTexts, double minTextSize, Stats stats)
+	{
+		List<double> heights = allTexts.Where(t => t.HeightFeet > 1E-06).Select(t => t.HeightFeet * TextHeightFactor).OrderBy(h => h).ToList();
+		if (heights.Count == 0)
+		{
+			return;
+		}
+
+		int scale = Math.Max(view.Scale, 1);
+		int below = heights.Count(h => h / scale < minTextSize * 0.95);
+		if (below < Math.Max(1, heights.Count / 10))
+		{
+			return;
+		}
+
+		// Escala más grande (1:N) con la que el 95 % de los textos queda por encima del mínimo.
+		double reference = heights[Math.Min(heights.Count - 1, (int)Math.Floor(heights.Count * 0.05))];
+		int suggested = Math.Max(1, (int)Math.Floor(reference / minTextSize));
+		if (suggested >= scale)
+		{
+			return;
+		}
+
+		bool canChange;
+		try
+		{
+			Parameter scaleParam = view.get_Parameter(BuiltInParameter.VIEW_SCALE_PULLDOWN_METRIC) ?? view.get_Parameter(BuiltInParameter.VIEW_SCALE);
+			canChange = scaleParam == null || !scaleParam.IsReadOnly;
+		}
+		catch (Exception)
+		{
+			canChange = false;
+		}
+
+		if (!canChange)
+		{
+			return;
+		}
+
+		var dialog = new TaskDialog("Explotar DWGs")
+		{
+			MainInstruction = "Los textos del DWG son muy pequeños para la escala de esta vista",
+			MainContent = $"{below} de {heights.Count} texto(s) del DWG necesitarían un tamaño menor al mínimo que admite Revit " +
+				$"({minTextSize * 304.8:0.##} mm) a la escala actual 1:{scale}, así que saldrían más grandes que en el DWG " +
+				"(por ejemplo, desbordando sus recuadros).\n\n" +
+				$"Si cambias la escala de la vista a 1:{suggested}, los textos se crearán con el mismo tamaño relativo al dibujo " +
+				"que en el DWG. Las líneas no cambian de tamaño; solo cambia el tamaño de las anotaciones de la vista.",
+			CommonButtons = TaskDialogCommonButtons.None
+		};
+		dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, $"Cambiar la escala de la vista a 1:{suggested} (recomendado)");
+		dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, $"Mantener 1:{scale}");
+		if (dialog.Show() != TaskDialogResult.CommandLink1)
+		{
+			return;
+		}
+
+		try
+		{
+			view.Scale = suggested;
+			stats.OldScale = scale;
+			stats.NewScale = suggested;
+		}
+		catch (Exception)
+		{
+		}
+	}
+
 	/// <summary>
 	/// Busca o crea tipos de TextNote "DWG x mm" una sola vez por combinación de tamaño, anchura y fuente
 	/// (el colector de tipos existentes se ejecuta una sola vez). Todos quedan con fondo transparente,
@@ -284,26 +399,88 @@ public class ExplodeDwgCommand : IExternalCommand
 
 		private readonly int _viewScale;
 
-		private readonly Dictionary<(int, int, string), ElementId> _byKey = new Dictionary<(int, int, string), ElementId>();
+		private readonly double _minTextSize;
+
+		private readonly Dictionary<(int, int, string, bool), ElementId> _byKey = new Dictionary<(int, int, string, bool), ElementId>();
 
 		private Dictionary<string, TextNoteType> _existingByName;
 
-		public TextNoteTypeCache(Document doc, int viewScale)
+		public TextNoteTypeCache(Document doc, int viewScale, double minTextSize)
 		{
 			_doc = doc;
 			_viewScale = Math.Max(viewScale, 1);
+			_minTextSize = minTextSize > 0.0 ? minTextSize : FallbackMinTextSizeFeet;
 		}
 
-		public ElementId Get(double modelHeightFeet, double widthFactor, string fontName)
+		public bool IsBelowMinimum(double modelHeightFeet) => modelHeightFeet * TextHeightFactor / _viewScale < _minTextSize * 0.95;
+
+		/// <summary>
+		/// Averigua el tamaño de texto más pequeño que Revit acepta en un tipo de texto, probando sobre un
+		/// tipo temporal dentro de una subtransacción que luego se deshace.
+		/// </summary>
+		public static double ProbeMinimumTextSize(Document doc)
+		{
+			try
+			{
+				if (!(doc.GetElement(doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType)) is TextNoteType baseType))
+				{
+					baseType = new FilteredElementCollector(doc).OfClass(typeof(TextNoteType)).Cast<TextNoteType>().FirstOrDefault();
+				}
+
+				if (baseType == null)
+				{
+					return FallbackMinTextSizeFeet;
+				}
+
+				using var sub = new SubTransaction(doc);
+				sub.Start();
+				try
+				{
+					var probe = baseType.Duplicate("DWG probe " + Guid.NewGuid().ToString("N")) as TextNoteType;
+					Parameter size = probe?.get_Parameter(BuiltInParameter.TEXT_SIZE);
+					if (size == null)
+					{
+						return FallbackMinTextSizeFeet;
+					}
+
+					// 0.02 mm … 0.4 mm
+					foreach (double mm in new[] { 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4 })
+					{
+						double feet = mm / 304.8;
+						try
+						{
+							if (size.Set(feet) && Math.Abs(size.AsDouble() - feet) < feet * 0.01)
+							{
+								return feet;
+							}
+						}
+						catch (Exception)
+						{
+						}
+					}
+				}
+				finally
+				{
+					sub.RollBack();
+				}
+			}
+			catch (Exception)
+			{
+			}
+
+			return FallbackMinTextSizeFeet;
+		}
+
+		public ElementId Get(double modelHeightFeet, double widthFactor, string fontName, bool bold)
 		{
 			double paperHeight = modelHeightFeet * TextHeightFactor / _viewScale;
-			paperHeight = Math.Max(MinTextSizeFeet, Math.Min(MaxTextSizeFeet, paperHeight));
+			paperHeight = Math.Max(_minTextSize, Math.Min(MaxTextSizeFeet, paperHeight));
 			double mm = paperHeight * 304.8;
 			widthFactor = Math.Round(Math.Max(0.01, Math.Min(10.0, widthFactor > 0.0 ? widthFactor : 1.0)), 2);
 			string font = string.IsNullOrWhiteSpace(fontName) ? DefaultFont : fontName;
 
 			// Resolución de 0.01 mm en el tamaño (antes 0.05 mm, que en textos pequeños era ~10 % de error).
-			var key = ((int)Math.Round(mm * 100.0), (int)Math.Round(widthFactor * 100.0), font);
+			var key = ((int)Math.Round(mm * 100.0), (int)Math.Round(widthFactor * 100.0), font, bold);
 			if (_byKey.TryGetValue(key, out ElementId id))
 			{
 				return id;
@@ -320,12 +497,17 @@ public class ExplodeDwgCommand : IExternalCommand
 				typeName += " " + font;
 			}
 
-			id = FindOrCreate(typeName, paperHeight, widthFactor, font);
+			if (bold)
+			{
+				typeName += " Negrita";
+			}
+
+			id = FindOrCreate(typeName, paperHeight, widthFactor, font, bold);
 			_byKey[key] = id;
 			return id;
 		}
 
-		private ElementId FindOrCreate(string typeName, double paperHeight, double widthFactor, string font)
+		private ElementId FindOrCreate(string typeName, double paperHeight, double widthFactor, string font, bool bold)
 		{
 			_existingByName ??= new FilteredElementCollector(_doc)
 				.OfClass(typeof(TextNoteType))
@@ -336,7 +518,7 @@ public class ExplodeDwgCommand : IExternalCommand
 			if (_existingByName.TryGetValue(typeName, out TextNoteType existing))
 			{
 				// Tipo creado por una versión anterior del addin: se corrige su configuración.
-				Configure(existing, paperHeight, widthFactor, font);
+				Configure(existing, paperHeight, widthFactor, font, bold);
 				return existing.Id;
 			}
 
@@ -367,13 +549,14 @@ public class ExplodeDwgCommand : IExternalCommand
 				return defaultTypeId;
 			}
 
-			Configure(created, paperHeight, widthFactor, font);
+			Configure(created, paperHeight, widthFactor, font, bold);
 			_existingByName[typeName] = created;
 			return created.Id;
 		}
 
-		private static void Configure(TextNoteType type, double paperHeight, double widthFactor, string font)
+		private static void Configure(TextNoteType type, double paperHeight, double widthFactor, string font, bool bold)
 		{
+			TrySet(type, BuiltInParameter.TEXT_STYLE_BOLD, p => p.Set(bold ? 1 : 0));
 			TrySet(type, BuiltInParameter.TEXT_SIZE, p => p.Set(paperHeight));
 			TrySet(type, BuiltInParameter.TEXT_WIDTH_SCALE, p => p.Set(widthFactor));
 			TrySet(type, BuiltInParameter.TEXT_FONT, p => p.Set(font));

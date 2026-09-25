@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using ACadSharp;
 using ACadSharp.Entities;
+using System.Text.RegularExpressions;
 using CSMath;
 
 namespace RevitDwgExploder.Commands;
@@ -32,6 +33,9 @@ internal sealed class RawText
 
 	/// <summary>Fuente TrueType equivalente en Windows, o null si el DWG usa una fuente SHX.</summary>
 	public string FontName;
+
+	/// <summary>Negrita (estilo con fuente "bd"/"bold" o MTEXT con \f…|b1).</summary>
+	public bool Bold;
 }
 
 internal enum TextAnchorH
@@ -126,18 +130,49 @@ internal static class CadTextCollector
 		GetTextAnchors(text, out TextAnchorH anchorH, out TextAnchorV anchorV, out bool useAlignmentPoint);
 		XYZ point = useAlignmentPoint && text.AlignmentPoint != null ? text.AlignmentPoint : text.InsertPoint;
 		double widthFactor = text.WidthFactor > 0.0 ? text.WidthFactor : text.Style?.Width ?? 1.0;
-		Add(output, text.Value, point, text.Height, text.Rotation, anchorH, anchorV, transform, widthFactor, GetFontName(text.Style));
+		Add(output, text.Value, point, text.Height, text.Rotation, anchorH, anchorV, transform, widthFactor, GetFontName(text.Style), IsBoldStyle(text.Style));
 	}
 
 	private static void AddMText(List<RawText> output, MText mText, Matrix4 transform)
 	{
 		GetMTextAnchors(mText.AttachmentPoint, out TextAnchorH anchorH, out TextAnchorV anchorV);
 		double widthFactor = mText.Style?.Width > 0.0 ? mText.Style.Width : 1.0;
-		Add(output, mText.PlainText, mText.InsertPoint, mText.Height, mText.Rotation, anchorH, anchorV, transform, widthFactor, GetFontName(mText.Style));
+		double height = mText.Height;
+		string font = GetFontName(mText.Style);
+		bool bold = IsBoldStyle(mText.Style);
+
+		// Formato interno del MTEXT (p.ej. "{\fArial|b1;\H5;SEGURIDAD}"): altura, anchura, fuente y negrita
+		// del primer tramo con formato mandan sobre las del estilo.
+		string raw = mText.Value ?? string.Empty;
+		Match h = MTextHeight.Match(raw);
+		if (h.Success && TryParse(h.Groups[1].Value, out double hv) && hv > 0.0)
+		{
+			height = h.Groups[2].Value.Length > 0 ? height * hv : hv;
+		}
+
+		Match w = MTextWidth.Match(raw);
+		if (w.Success && TryParse(w.Groups[1].Value, out double wv) && wv > 0.0)
+		{
+			widthFactor = w.Groups[2].Value.Length > 0 ? widthFactor * wv : wv;
+		}
+
+		Match f = MTextFont.Match(raw);
+		if (f.Success)
+		{
+			string family = f.Groups[1].Value.Trim();
+			if (family.Length > 0 && !family.EndsWith(".shx", StringComparison.OrdinalIgnoreCase))
+			{
+				font = TrueTypeFonts.TryGetValue(System.IO.Path.GetFileNameWithoutExtension(family), out string mapped) ? mapped : family;
+			}
+
+			bold = f.Groups[2].Value == "1";
+		}
+
+		Add(output, mText.PlainText, mText.InsertPoint, height, mText.Rotation, anchorH, anchorV, transform, widthFactor, font, bold);
 	}
 
 	private static void Add(List<RawText> output, string value, XYZ localPoint, double localHeight, double localRotation,
-		TextAnchorH anchorH, TextAnchorV anchorV, Matrix4 transform, double widthFactor, string fontName)
+		TextAnchorH anchorH, TextAnchorV anchorV, Matrix4 transform, double widthFactor, string fontName, bool bold)
 	{
 		string clean = CleanText(value);
 		if (clean.Length == 0)
@@ -172,8 +207,24 @@ internal static class CadTextCollector
 			AnchorH = anchorH,
 			AnchorV = anchorV,
 			WidthFactor = widthFactor > 0.01 && widthFactor < 100.0 ? widthFactor : 1.0,
-			FontName = fontName
+			FontName = fontName,
+			Bold = bold
 		});
+	}
+
+	private static readonly Regex MTextHeight = new Regex(@"\\H([0-9]*\.?[0-9]+)(x?);", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+	private static readonly Regex MTextWidth = new Regex(@"\\W([0-9]*\.?[0-9]+)(x?);", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+	private static readonly Regex MTextFont = new Regex(@"\\f([^|;]*)(?:\|b([01]))?[^;]*;", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+	private static bool TryParse(string value, out double result) =>
+		double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result);
+
+	private static bool IsBoldStyle(ACadSharp.Tables.TextStyle style)
+	{
+		string name = System.IO.Path.GetFileNameWithoutExtension(style?.Filename ?? string.Empty);
+		return name.EndsWith("bd", StringComparison.OrdinalIgnoreCase) || name.IndexOf("bold", StringComparison.OrdinalIgnoreCase) >= 0;
 	}
 
 	private static readonly Dictionary<string, string> TrueTypeFonts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -181,6 +232,14 @@ internal static class CadTextCollector
 		["arial"] = "Arial",
 		["arialn"] = "Arial Narrow",
 		["arialbd"] = "Arial",
+		["arialblk"] = "Arial Black",
+		["ariblk"] = "Arial Black",
+		["arial black"] = "Arial Black",
+		["arial narrow"] = "Arial Narrow",
+		["timesbd"] = "Times New Roman",
+		["calibrib"] = "Calibri",
+		["verdanab"] = "Verdana",
+		["tahomabd"] = "Tahoma",
 		["calibri"] = "Calibri",
 		["cambria"] = "Cambria",
 		["consola"] = "Consolas",

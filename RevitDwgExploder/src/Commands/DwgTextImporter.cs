@@ -27,6 +27,8 @@ internal static class DwgTextImporter
 		public double WidthFactor = 1.0;
 
 		public string FontName;
+
+		public bool Bold;
 	}
 
 	internal enum ReadStatus
@@ -143,7 +145,8 @@ internal static class DwgTextImporter
 				AnchorH = raw.AnchorH,
 				AnchorV = raw.AnchorV,
 				WidthFactor = raw.WidthFactor,
-				FontName = raw.FontName
+				FontName = raw.FontName,
+				Bold = raw.Bold
 			});
 		}
 

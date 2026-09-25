@@ -18,6 +18,22 @@ Addin que convierte los DWG importados/vinculados de la vista activa (o los sele
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.3
+
+### Tamaño de texto según la escala del DWG
+- Antes los textos tenían un tamaño mínimo fijo de 0.4 mm en papel: con DWG pequeños (o insertados a
+  escala reducida) todos los textos quedaban "topados" en ese mínimo, salían del mismo tamaño y más grandes
+  que en el DWG. Ahora el addin averigua el **mínimo real que acepta Revit** y solo limita por debajo de él.
+- Si aun así muchos textos quedarían por debajo del mínimo a la escala de la vista, el addin **propone cambiar
+  la escala de la vista** (p.ej. de 1:100 a 1:5) para que los textos mantengan el mismo tamaño relativo al
+  dibujo que en el DWG. Las líneas no cambian; solo las anotaciones. El resumen indica cuántos textos
+  quedaron más grandes si se mantiene la escala.
+- Se lee el **formato interno de MTEXT**: altura (`\H`), anchura (`\W`), fuente y **negrita** (`\fArial|b1`),
+  que antes se ignoraban (p.ej. títulos grandes que salían del tamaño del texto normal).
+- Tipos de texto en **negrita** cuando el DWG la usa (tipos `DWG x mm … Negrita`).
+- Si los textos leídos del DWG vinculado no caen sobre el CAD (unidades o escala de inserción distintas),
+  se usan los de la reexportación, que ya vienen a la escala real del modelo.
+
 ## Cambios de la versión 1.2
 
 ### Textos

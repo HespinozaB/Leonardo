@@ -85,7 +85,8 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 					AnchorH = raw.AnchorH,
 					AnchorV = raw.AnchorV,
 					WidthFactor = raw.WidthFactor,
-					FontName = raw.FontName
+					FontName = raw.FontName,
+					Bold = raw.Bold
 				});
 			}
 		}
