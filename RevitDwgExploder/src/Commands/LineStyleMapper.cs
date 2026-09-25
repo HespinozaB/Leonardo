@@ -25,6 +25,12 @@ internal sealed class LineStyleMapper
 
 	private readonly Dictionary<string, Category> _lineSubcategoriesByName;
 
+	private readonly Dictionary<(ElementId, string), GraphicsStyle> _patternCache = new Dictionary<(ElementId, string), GraphicsStyle>();
+
+	private readonly Dictionary<string, ElementId> _linePatternIds = new Dictionary<string, ElementId>(StringComparer.OrdinalIgnoreCase);
+
+	public int CreatedPatterns { get; private set; }
+
 	public int CreatedStyles { get; private set; }
 
 	public LineStyleMapper(Document doc)
@@ -65,6 +71,98 @@ internal sealed class LineStyleMapper
 
 		_cache[sourceStyleId] = resolved;
 		return resolved;
+	}
+
+	/// <summary>
+	/// Line Style para una curva cuyo tipo de línea se leyó del DWG original ("DWG-&lt;capa&gt;-&lt;tipo&gt;"):
+	/// mismo color y grosor que la capa, pero con el patrón (continuo o segmentado) real de la entidad.
+	/// </summary>
+	public GraphicsStyle Resolve(ElementId sourceStyleId, DwgLinePattern pattern)
+	{
+		if (pattern == null)
+		{
+			return Resolve(sourceStyleId);
+		}
+
+		if (_linesCategory == null)
+		{
+			return null;
+		}
+
+		ElementId key = sourceStyleId ?? ElementId.InvalidElementId;
+		if (_patternCache.TryGetValue((key, pattern.Key), out GraphicsStyle cached))
+		{
+			return cached;
+		}
+
+		GraphicsStyle resolved = null;
+		try
+		{
+			GraphicsStyle source = key != ElementId.InvalidElementId ? _doc.GetElement(key) as GraphicsStyle : null;
+			Category sourceCategory = source?.GraphicsStyleCategory;
+			string layerName = sourceCategory?.Name ?? "0";
+			string name = MakeValidName(Prefix + layerName + "-" + pattern.Key);
+			if (!_lineSubcategoriesByName.TryGetValue(name, out Category target))
+			{
+				target = _doc.Settings.Categories.NewSubcategory(_linesCategory, name);
+				if (sourceCategory != null)
+				{
+					CopyAppearance(sourceCategory, target);
+				}
+
+				_lineSubcategoriesByName[name] = target;
+				CreatedStyles++;
+			}
+
+			ElementId patternId = GetOrCreateLinePattern(pattern);
+			if (patternId != null)
+			{
+				target.SetLinePatternId(patternId, GraphicsStyleType.Projection);
+			}
+
+			resolved = target.GetGraphicsStyle(GraphicsStyleType.Projection);
+		}
+		catch (Exception)
+		{
+			resolved = Resolve(sourceStyleId);
+		}
+
+		_patternCache[(key, pattern.Key)] = resolved;
+		return resolved;
+	}
+
+	private ElementId GetOrCreateLinePattern(DwgLinePattern pattern)
+	{
+		if (pattern.IsContinuous)
+		{
+			return LinePatternElement.GetSolidPatternId();
+		}
+
+		string name = MakeValidName(Prefix + pattern.Key);
+		if (_linePatternIds.TryGetValue(name, out ElementId id))
+		{
+			return id;
+		}
+
+		LinePatternElement element = LinePatternElement.GetLinePatternElementByName(_doc, name);
+		if (element == null)
+		{
+			try
+			{
+				var linePattern = new LinePattern(name);
+				linePattern.SetSegments(pattern.Segments.Select(s => new LinePatternSegment(s.Type, s.Length)).ToList());
+				element = LinePatternElement.Create(_doc, linePattern);
+				CreatedPatterns++;
+			}
+			catch (Exception)
+			{
+				element = null;
+			}
+		}
+
+		id = element?.Id;
+		_linePatternIds[name] = id;
+		return id;
 	}
 
 	private GraphicsStyle Map(GraphicsStyle source)

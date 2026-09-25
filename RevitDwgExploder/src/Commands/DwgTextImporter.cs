@@ -23,6 +23,10 @@ internal static class DwgTextImporter
 		public TextAnchorH AnchorH;
 
 		public TextAnchorV AnchorV;
+
+		public double WidthFactor = 1.0;
+
+		public string FontName;
 	}
 
 	internal enum ReadStatus
@@ -34,32 +38,32 @@ internal static class DwgTextImporter
 	}
 
 	/// <summary>
-	/// Textos ya leídos por ruta de archivo durante una ejecución del comando, para no volver a
-	/// parsear el mismo DWG cuando hay varias instancias del mismo vínculo.
+	/// DWG ya leídos por ruta de archivo durante una ejecución del comando, para no volver a
+	/// parsear el mismo archivo cuando hay varias instancias del mismo vínculo.
 	/// </summary>
 	internal sealed class FileCache
 	{
-		private readonly Dictionary<string, (List<RawText> Texts, double FeetPerUnit)> _byPath =
-			new Dictionary<string, (List<RawText>, double)>(StringComparer.OrdinalIgnoreCase);
-
-		public bool TryGet(string path, out List<RawText> texts, out double feetPerUnit)
+		internal sealed class Entry
 		{
-			if (_byPath.TryGetValue(path, out var entry))
-			{
-				texts = entry.Texts;
-				feetPerUnit = entry.FeetPerUnit;
-				return true;
-			}
+			public CadDocument Cad;
 
-			texts = null;
-			feetPerUnit = 0.0;
-			return false;
+			public List<RawText> Texts;
+
+			public double FeetPerUnit;
 		}
 
-		public void Add(string path, List<RawText> texts, double feetPerUnit)
-		{
-			_byPath[path] = (texts, feetPerUnit);
-		}
+		private readonly Dictionary<string, Entry> _byPath = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
+
+		private readonly Dictionary<ElementId, Entry> _byInstance = new Dictionary<ElementId, Entry>();
+
+		public bool TryGet(string path, out Entry entry) => _byPath.TryGetValue(path, out entry);
+
+		public void Add(string path, Entry entry) => _byPath[path] = entry;
+
+		/// <summary>Registra qué DWG leído corresponde a cada instancia (para leer después sus tipos de línea).</summary>
+		public void Bind(ElementId instanceId, Entry entry) => _byInstance[instanceId] = entry;
+
+		public Entry ForInstance(ElementId instanceId) => _byInstance.TryGetValue(instanceId, out Entry entry) ? entry : null;
 	}
 
 	public static ReadStatus TryReadTexts(Document doc, ImportInstance importInstance, FileCache cache,
@@ -95,7 +99,7 @@ internal static class DwgTextImporter
 			return ReadStatus.FileNotFound;
 		}
 
-		if (!cache.TryGet(path, out List<RawText> rawTexts, out double feetPerUnit))
+		if (!cache.TryGet(path, out FileCache.Entry entry))
 		{
 			CadDocument cadDocument;
 			try
@@ -112,15 +116,22 @@ internal static class DwgTextImporter
 				return ReadStatus.ReadError;
 			}
 
-			rawTexts = CadTextCollector.Collect(cadDocument);
-			feetPerUnit = GetFeetPerDwgUnit(cadDocument.Header?.InsUnits ?? UnitsType.Unitless);
-			cache.Add(path, rawTexts, feetPerUnit);
+			entry = new FileCache.Entry
+			{
+				Cad = cadDocument,
+				Texts = CadTextCollector.Collect(cadDocument),
+				FeetPerUnit = GetFeetPerDwgUnit(cadDocument.Header?.InsUnits ?? UnitsType.Unitless)
+			};
+			cache.Add(path, entry);
 		}
+
+		cache.Bind(importInstance.Id, entry);
+		double feetPerUnit = entry.FeetPerUnit;
 
 		Transform transform = importInstance.GetTransform();
 		double basisAngle = Math.Atan2(transform.BasisX.Y, transform.BasisX.X);
 		double scale = feetPerUnit * transform.Scale;
-		foreach (RawText raw in rawTexts)
+		foreach (RawText raw in entry.Texts)
 		{
 			var local = new XYZ(raw.X * feetPerUnit, raw.Y * feetPerUnit, raw.Z * feetPerUnit);
 			texts.Add(new DwgTextEntry
@@ -130,7 +141,9 @@ internal static class DwgTextImporter
 				HeightFeet = raw.Height * scale,
 				RotationRadians = raw.Rotation + basisAngle,
 				AnchorH = raw.AnchorH,
-				AnchorV = raw.AnchorV
+				AnchorV = raw.AnchorV,
+				WidthFactor = raw.WidthFactor,
+				FontName = raw.FontName
 			});
 		}
 

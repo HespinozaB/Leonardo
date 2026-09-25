@@ -18,6 +18,14 @@ public class ExplodeDwgCommand : IExternalCommand
 
 	private const double MaxTextSizeFeet = 1.0;
 
+	/// <summary>
+	/// Corrección de altura del texto: a igual "Tamaño de texto", las letras de Revit (Arial) salen algo
+	/// más grandes que las del DWG, así que se reduce un 10 % para que quepan en sus recuadros.
+	/// </summary>
+	private const double TextHeightFactor = 0.9;
+
+	private const string DefaultFont = "Arial";
+
 	/// <summary>Cantidad de curvas por llamada a NewDetailCurveArray.</summary>
 	private const int CurveBatchSize = 500;
 
@@ -139,11 +147,19 @@ public class ExplodeDwgCommand : IExternalCommand
 					CollectCurves(geometry, curves, seen, minLength, ref stats.Skipped);
 				}
 
-				CreateDetailCurves(doc, view, curves, lineStyles, stats);
+				DwgLinetypeIndex linetypes = null;
+				DwgTextImporter.FileCache.Entry source = fileCache.ForInstance(instance.Id);
+				if (source != null)
+				{
+					linetypes = DwgLinetypeIndex.Build(source.Cad, source.FeetPerUnit, instance.GetTransform(), view.Scale);
+				}
+
+				CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
 				stats.Processed++;
 			}
 
 			stats.CreatedStyles = lineStyles.CreatedStyles;
+			stats.CreatedPatterns = lineStyles.CreatedPatterns;
 			if (tx.Commit() != TransactionStatus.Committed)
 			{
 				message = "No se pudo confirmar la transacción.";
@@ -165,6 +181,8 @@ public class ExplodeDwgCommand : IExternalCommand
 		public int ExactTexts;
 		public int OcrTexts;
 		public int CreatedStyles;
+		public int CreatedPatterns;
+		public int PatternedLines;
 	}
 
 	private static void ShowSummary(Stats s)
@@ -178,6 +196,10 @@ public class ExplodeDwgCommand : IExternalCommand
 		string styles = s.CreatedStyles > 0
 			? $"\nLine Styles creados a partir de capas del DWG: {s.CreatedStyles} (prefijo \"DWG-\")."
 			: string.Empty;
+		if (s.CreatedPatterns > 0 || s.PatternedLines > 0)
+		{
+			styles += $"\nLíneas con tipo de línea leído del DWG original: {s.PatternedLines} (patrones de línea creados: {s.CreatedPatterns}).";
+		}
 		string ocr = s.OcrTexts > 0
 			? "\n\nOjo: hubo textos creados por OCR (reconocimiento aproximado). Conviene verificarlos."
 			: string.Empty;
@@ -201,7 +223,7 @@ public class ExplodeDwgCommand : IExternalCommand
 			return false;
 		}
 
-		var options = new TextNoteOptions(types.Get(entry.HeightFeet))
+		var options = new TextNoteOptions(types.Get(entry.HeightFeet, entry.WidthFactor, entry.FontName))
 		{
 			HorizontalAlignment = entry.AnchorH switch
 			{
@@ -252,8 +274,9 @@ public class ExplodeDwgCommand : IExternalCommand
 	}
 
 	/// <summary>
-	/// Busca o crea tipos de TextNote "DWG x mm" una sola vez por tamaño (el colector de tipos existentes
-	/// se ejecuta una sola vez, no una vez por tamaño nuevo).
+	/// Busca o crea tipos de TextNote "DWG x mm" una sola vez por combinación de tamaño, anchura y fuente
+	/// (el colector de tipos existentes se ejecuta una sola vez). Todos quedan con fondo transparente,
+	/// sin borde y con desfase de directriz/borde 0, para que no tapen las líneas ni agranden el recuadro.
 	/// </summary>
 	private sealed class TextNoteTypeCache
 	{
@@ -261,7 +284,7 @@ public class ExplodeDwgCommand : IExternalCommand
 
 		private readonly int _viewScale;
 
-		private readonly Dictionary<int, ElementId> _bySize = new Dictionary<int, ElementId>();
+		private readonly Dictionary<(int, int, string), ElementId> _byKey = new Dictionary<(int, int, string), ElementId>();
 
 		private Dictionary<string, TextNoteType> _existingByName;
 
@@ -271,23 +294,38 @@ public class ExplodeDwgCommand : IExternalCommand
 			_viewScale = Math.Max(viewScale, 1);
 		}
 
-		public ElementId Get(double modelHeightFeet)
+		public ElementId Get(double modelHeightFeet, double widthFactor, string fontName)
 		{
-			double paperHeight = modelHeightFeet / _viewScale;
+			double paperHeight = modelHeightFeet * TextHeightFactor / _viewScale;
 			paperHeight = Math.Max(MinTextSizeFeet, Math.Min(MaxTextSizeFeet, paperHeight));
 			double mm = paperHeight * 304.8;
-			int key = (int)Math.Round(mm * 10.0);
-			if (_bySize.TryGetValue(key, out ElementId id))
+			widthFactor = Math.Round(Math.Max(0.01, Math.Min(10.0, widthFactor > 0.0 ? widthFactor : 1.0)), 2);
+			string font = string.IsNullOrWhiteSpace(fontName) ? DefaultFont : fontName;
+
+			// Resolución de 0.01 mm en el tamaño (antes 0.05 mm, que en textos pequeños era ~10 % de error).
+			var key = ((int)Math.Round(mm * 100.0), (int)Math.Round(widthFactor * 100.0), font);
+			if (_byKey.TryGetValue(key, out ElementId id))
 			{
 				return id;
 			}
 
-			id = FindOrCreate($"DWG {mm:0.##} mm", paperHeight);
-			_bySize[key] = id;
+			string typeName = $"DWG {mm:0.00} mm";
+			if (Math.Abs(widthFactor - 1.0) > 0.005)
+			{
+				typeName += $" x{widthFactor:0.00}";
+			}
+
+			if (!font.Equals(DefaultFont, StringComparison.OrdinalIgnoreCase))
+			{
+				typeName += " " + font;
+			}
+
+			id = FindOrCreate(typeName, paperHeight, widthFactor, font);
+			_byKey[key] = id;
 			return id;
 		}
 
-		private ElementId FindOrCreate(string typeName, double paperHeight)
+		private ElementId FindOrCreate(string typeName, double paperHeight, double widthFactor, string font)
 		{
 			_existingByName ??= new FilteredElementCollector(_doc)
 				.OfClass(typeof(TextNoteType))
@@ -297,6 +335,8 @@ public class ExplodeDwgCommand : IExternalCommand
 
 			if (_existingByName.TryGetValue(typeName, out TextNoteType existing))
 			{
+				// Tipo creado por una versión anterior del addin: se corrige su configuración.
+				Configure(existing, paperHeight, widthFactor, font);
 				return existing.Id;
 			}
 
@@ -327,28 +367,58 @@ public class ExplodeDwgCommand : IExternalCommand
 				return defaultTypeId;
 			}
 
-			try
-			{
-				created.get_Parameter(BuiltInParameter.TEXT_SIZE)?.Set(paperHeight);
-			}
-			catch (Autodesk.Revit.Exceptions.ArgumentException)
-			{
-			}
-
+			Configure(created, paperHeight, widthFactor, font);
 			_existingByName[typeName] = created;
 			return created.Id;
+		}
+
+		private static void Configure(TextNoteType type, double paperHeight, double widthFactor, string font)
+		{
+			TrySet(type, BuiltInParameter.TEXT_SIZE, p => p.Set(paperHeight));
+			TrySet(type, BuiltInParameter.TEXT_WIDTH_SCALE, p => p.Set(widthFactor));
+			TrySet(type, BuiltInParameter.TEXT_FONT, p => p.Set(font));
+			// Fondo: 0 = Opaco, 1 = Transparente.
+			TrySet(type, BuiltInParameter.TEXT_BACKGROUND, p => p.Set(1));
+			// "Desfase de línea directriz/borde" = 0: el recuadro de la nota se ajusta al texto.
+			TrySet(type, BuiltInParameter.LEADER_OFFSET_SHEET, p => p.Set(0.0));
+			// "Mostrar borde" desactivado.
+			TrySet(type, BuiltInParameter.TEXT_BOX_VISIBILITY, p => p.Set(0));
+		}
+
+		private static void TrySet(Element element, BuiltInParameter id, Action<Parameter> set)
+		{
+			try
+			{
+				Parameter parameter = element.get_Parameter(id);
+				if (parameter != null && !parameter.IsReadOnly)
+				{
+					set(parameter);
+				}
+			}
+			catch (Exception)
+			{
+			}
 		}
 	}
 
 	// ---------------------------------------------------------------- Curvas
 
-	private static void CreateDetailCurves(Document doc, View view, List<(Curve Curve, ElementId StyleId)> curves, LineStyleMapper lineStyles, Stats stats)
+	private static void CreateDetailCurves(Document doc, View view, List<(Curve Curve, ElementId StyleId)> curves, LineStyleMapper lineStyles,
+		DwgLinetypeIndex linetypes, Stats stats)
 	{
 		// Agrupar por Line Style resuelto: cada grupo se crea en lote con NewDetailCurveArray.
 		var groups = new Dictionary<ElementId, (GraphicsStyle Style, List<Curve> Curves)>();
 		foreach (var (curve, styleId) in curves)
 		{
-			GraphicsStyle style = lineStyles.Resolve(styleId);
+			// Si tenemos el DWG original, el tipo de línea real de la entidad (segmentada o continua)
+			// manda sobre el de la capa.
+			DwgLinePattern pattern = linetypes?.Find(curve);
+			if (pattern != null)
+			{
+				stats.PatternedLines++;
+			}
+
+			GraphicsStyle style = pattern != null ? lineStyles.Resolve(styleId, pattern) : lineStyles.Resolve(styleId);
 			ElementId key = style?.Id ?? ElementId.InvalidElementId;
 			if (!groups.TryGetValue(key, out var group))
 			{

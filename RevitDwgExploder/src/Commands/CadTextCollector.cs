@@ -26,6 +26,12 @@ internal sealed class RawText
 	public TextAnchorH AnchorH;
 
 	public TextAnchorV AnchorV;
+
+	/// <summary>Factor de anchura del texto en el DWG (1 = normal).</summary>
+	public double WidthFactor = 1.0;
+
+	/// <summary>Fuente TrueType equivalente en Windows, o null si el DWG usa una fuente SHX.</summary>
+	public string FontName;
 }
 
 internal enum TextAnchorH
@@ -119,17 +125,19 @@ internal static class CadTextCollector
 	{
 		GetTextAnchors(text, out TextAnchorH anchorH, out TextAnchorV anchorV, out bool useAlignmentPoint);
 		XYZ point = useAlignmentPoint && text.AlignmentPoint != null ? text.AlignmentPoint : text.InsertPoint;
-		Add(output, text.Value, point, text.Height, text.Rotation, anchorH, anchorV, transform);
+		double widthFactor = text.WidthFactor > 0.0 ? text.WidthFactor : text.Style?.Width ?? 1.0;
+		Add(output, text.Value, point, text.Height, text.Rotation, anchorH, anchorV, transform, widthFactor, GetFontName(text.Style));
 	}
 
 	private static void AddMText(List<RawText> output, MText mText, Matrix4 transform)
 	{
 		GetMTextAnchors(mText.AttachmentPoint, out TextAnchorH anchorH, out TextAnchorV anchorV);
-		Add(output, mText.PlainText, mText.InsertPoint, mText.Height, mText.Rotation, anchorH, anchorV, transform);
+		double widthFactor = mText.Style?.Width > 0.0 ? mText.Style.Width : 1.0;
+		Add(output, mText.PlainText, mText.InsertPoint, mText.Height, mText.Rotation, anchorH, anchorV, transform, widthFactor, GetFontName(mText.Style));
 	}
 
 	private static void Add(List<RawText> output, string value, XYZ localPoint, double localHeight, double localRotation,
-		TextAnchorH anchorH, TextAnchorV anchorV, Matrix4 transform)
+		TextAnchorH anchorH, TextAnchorV anchorV, Matrix4 transform, double widthFactor, string fontName)
 	{
 		string clean = CleanText(value);
 		if (clean.Length == 0)
@@ -162,8 +170,60 @@ internal static class CadTextCollector
 			Height = height,
 			Rotation = Math.Abs(dx) + Math.Abs(dy) > 1E-12 ? Math.Atan2(dy, dx) : localRotation,
 			AnchorH = anchorH,
-			AnchorV = anchorV
+			AnchorV = anchorV,
+			WidthFactor = widthFactor > 0.01 && widthFactor < 100.0 ? widthFactor : 1.0,
+			FontName = fontName
 		});
+	}
+
+	private static readonly Dictionary<string, string> TrueTypeFonts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+	{
+		["arial"] = "Arial",
+		["arialn"] = "Arial Narrow",
+		["arialbd"] = "Arial",
+		["calibri"] = "Calibri",
+		["cambria"] = "Cambria",
+		["consola"] = "Consolas",
+		["cour"] = "Courier New",
+		["couri"] = "Courier New",
+		["isocp"] = "ISOCPEUR",
+		["isocpeur"] = "ISOCPEUR",
+		["segoeui"] = "Segoe UI",
+		["tahoma"] = "Tahoma",
+		["times"] = "Times New Roman",
+		["verdana"] = "Verdana",
+		["swiss"] = "Swis721 BT",
+		["swissl"] = "Swis721 Lt BT",
+		["century"] = "Century Gothic",
+		["gothic"] = "Century Gothic"
+	};
+
+	/// <summary>
+	/// Devuelve la fuente TrueType del estilo de texto (p.ej. "arial.ttf" → "Arial").
+	/// Para fuentes SHX (romans, simplex, txt…) devuelve null y se usa la fuente del tipo por defecto.
+	/// </summary>
+	private static string GetFontName(ACadSharp.Tables.TextStyle style)
+	{
+		string file = style?.Filename;
+		if (string.IsNullOrWhiteSpace(file))
+		{
+			return null;
+		}
+
+		string ext = System.IO.Path.GetExtension(file);
+		string name = System.IO.Path.GetFileNameWithoutExtension(file);
+		if (string.IsNullOrEmpty(ext))
+		{
+			// Algunos DWG guardan directamente el nombre de la familia ("Arial").
+			return TrueTypeFonts.TryGetValue(name, out string mapped) ? mapped : null;
+		}
+
+		if (!ext.Equals(".ttf", StringComparison.OrdinalIgnoreCase) && !ext.Equals(".otf", StringComparison.OrdinalIgnoreCase))
+		{
+			return null;
+		}
+
+		return TrueTypeFonts.TryGetValue(name, out string font) ? font : null;
 	}
 
 	internal static string CleanText(string raw)

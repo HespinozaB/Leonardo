@@ -83,7 +83,9 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 					HeightFeet = height,
 					RotationRadians = raw.Rotation,
 					AnchorH = raw.AnchorH,
-					AnchorV = raw.AnchorV
+					AnchorV = raw.AnchorV,
+					WidthFactor = raw.WidthFactor,
+					FontName = raw.FontName
 				});
 			}
 		}

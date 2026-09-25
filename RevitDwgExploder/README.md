@@ -18,6 +18,27 @@ Addin que convierte los DWG importados/vinculados de la vista activa (o los sele
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.2
+
+### Textos
+- Los tipos de texto `DWG x mm` se crean con **fondo Transparente**, **sin borde** y con
+  **Desfase de línea directriz/borde = 0** (antes heredaban ~2 mm del tipo por defecto, lo que agrandaba
+  el recuadro de cada nota). Si ya existían tipos `DWG …` de una versión anterior, se corrigen al reutilizarlos.
+- Tamaño de texto **10 % menor** (`TextHeightFactor = 0.9` en `ExplodeDwgCommand.cs`) para que el texto
+  quepa en sus recuadros como en el DWG, y el tamaño se redondea a 0.01 mm (antes 0.05 mm).
+- Se respeta el **factor de anchura** del texto del DWG y, si el estilo usa una fuente TrueType conocida
+  (Arial, Arial Narrow, Calibri, Times New Roman, ISOCPEUR, …), esa **fuente**. Con fuentes SHX se usa Arial.
+
+### Tipos de línea (continuas / segmentadas)
+- Revit solo conserva el tipo de línea **por capa**; las líneas con tipo de línea asignado **por entidad**
+  (p.ej. ejes con CENTER sobre una capa continua) llegaban continuas. Ahora, cuando se dispone del DWG
+  original (vinculado, o seleccionado al ejecutar), se lee el tipo de línea real de cada entidad
+  (también dentro de bloques, con ByLayer/ByBlock, LTSCALE y escala de tipo de línea del objeto) y se crea
+  el patrón de línea `DWG-<tipo> <largo>mm` escalado a la vista y el Line Style `DWG-<capa>-<tipo> …`.
+- También se detectan líneas continuas sobre capas segmentadas.
+- Para DWG **importados** sin archivo original, se usa el patrón que Revit asignó a la capa: conviene
+  indicar el .dwg original en el diálogo para obtener el tipo de línea exacto.
+
 ## Cambios de la versión 1.1 (optimización)
 
 ### Rendimiento
