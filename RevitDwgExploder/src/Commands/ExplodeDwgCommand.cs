@@ -63,6 +63,7 @@ public class ExplodeDwgCommand : IExternalCommand
 
 		// 1) Leer textos (fuera de la transacción principal: exportar requiere documento no modificable).
 		var textsByInstance = new Dictionary<ElementId, (List<DwgTextImporter.DwgTextEntry> Texts, bool IsOcr)>();
+		var exportedHatches = new Dictionary<ElementId, List<HatchRegion>>();
 		var fileCache = new DwgTextImporter.FileCache();
 		using (var roundTrip = new DwgRoundTripTextExtractor(doc, view))
 		{
@@ -70,6 +71,11 @@ public class ExplodeDwgCommand : IExternalCommand
 			{
 				manualPaths.TryGetValue(instance.Id, out string path);
 				DwgTextImporter.ReadStatus status = DwgTextImporter.TryReadTexts(doc, instance, fileCache, out List<DwgTextImporter.DwgTextEntry> texts, path);
+				if (fileCache.ForInstance(instance.Id) == null)
+				{
+					// Sin DWG original: los hatch (con su patrón) se leen de la vista reexportada a DWG.
+					exportedHatches[instance.Id] = roundTrip.ExtractHatches(instance);
+				}
 				switch (status)
 				{
 					case DwgTextImporter.ReadStatus.NotLinked:
@@ -132,9 +138,11 @@ public class ExplodeDwgCommand : IExternalCommand
 
 				// a) Hatch del DWG → Filled Regions (se crean primero para que queden debajo de líneas y textos).
 				var hatchAreas = new HatchAreaIndex(Math.Max(minLength * 2.0, 0.003));
-				if (source != null)
+				List<HatchRegion> hatches = source != null
+					? DwgHatchReader.Read(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform())
+					: exportedHatches.TryGetValue(instance.Id, out var exported) ? exported : new List<HatchRegion>();
 				{
-					foreach (HatchRegion hatch in DwgHatchReader.Read(source.Cad, source.FeetPerUnit, instance.GetTransform()))
+					foreach (HatchRegion hatch in hatches)
 					{
 						if (regions.Create(hatch))
 						{
@@ -163,7 +171,7 @@ public class ExplodeDwgCommand : IExternalCommand
 				DwgLinetypeIndex linetypes = null;
 				if (source != null)
 				{
-					linetypes = DwgLinetypeIndex.Build(source.Cad, source.FeetPerUnit, instance.GetTransform(), view.Scale);
+					linetypes = DwgLinetypeIndex.Build(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform(), view.Scale);
 				}
 
 				CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
@@ -831,47 +839,137 @@ public class ExplodeDwgCommand : IExternalCommand
 	}
 
 	/// <summary>
-	/// Rellenos que Revit muestra en el CAD (mallas y láminas planas):
-	/// - si su capa tiene hatch ya convertidos desde el DWG original, se descartan (no duplicar);
-	/// - una malla (relleno sólido) se convierte en un Filled Region sólido con el color de la capa;
-	/// - en otro caso se dibuja solo su contorno (antes se dibujaban todas las aristas de los triángulos).
+	/// Rellenos que Revit muestra en el CAD (mallas y láminas planas, p.ej. hatch sólidos):
+	/// - si ya los cubre un hatch convertido desde el DWG original, se descartan (no duplicar);
+	/// - si no, se convierten en un Filled Region sólido con el color del relleno (material) o de su capa;
+	/// - si Revit no acepta la región, se dibuja solo su contorno.
 	/// </summary>
 	private static void ConvertFills(List<(GeometryObject Fill, ElementId StyleId)> fills, HatchAreaIndex hatchAreas, FilledRegionBuilder regions,
 		LayerLookup layers, List<(Curve, ElementId)> curves, HashSet<(long, long, long, long, long, long, long)> seen, double minLength, Stats stats)
 	{
 		foreach (var (fill, styleId) in fills)
 		{
-			if (hatchAreas.HasLayer(layers.NameOf(styleId)))
+			var pieces = new List<(List<CurveLoop> Loops, XYZ Sample, ElementId Material)>();
+			if (fill is Mesh mesh && mesh.NumTriangles > 0)
 			{
-				continue;
-			}
-
-			if (fill is Mesh mesh)
-			{
-				List<CurveLoop> outline = HatchAreaIndex.MeshOutline(mesh, minLength);
-				if (outline.Count > 0 && regions.CreateSolid(outline, layers.ColorOf(styleId)))
-				{
-					continue;
-				}
-
-				foreach (Curve c in outline.SelectMany(l => l))
-				{
-					AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
-				}
+				MeshTriangle first = mesh.get_Triangle(0);
+				XYZ centroid = (first.get_Vertex(0) + first.get_Vertex(1) + first.get_Vertex(2)) / 3.0;
+				pieces.Add((HatchAreaIndex.MeshOutline(mesh, minLength), centroid, mesh.MaterialElementId));
 			}
 			else if (fill is Solid solid)
 			{
 				foreach (Face face in solid.Faces)
 				{
-					foreach (CurveLoop loop in face.GetEdgesAsCurveLoops())
+					IList<CurveLoop> faceLoops = face.GetEdgesAsCurveLoops();
+					if (faceLoops.Count > 0)
 					{
-						foreach (Curve c in loop)
-						{
-							AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
-						}
+						pieces.Add((faceLoops.ToList(), SamplePoint(face), face.MaterialElementId));
 					}
 				}
 			}
+
+			foreach (var (loops, sample, material) in pieces)
+			{
+				if (loops.Count == 0 || (sample != null && hatchAreas.Contains(sample)))
+				{
+					continue;
+				}
+
+				// Si hay líneas de la misma capa dentro de la lámina, es un hatch con patrón que Revit ya
+				// dibuja con líneas: no se rellena en sólido (se conservan esas líneas).
+				if (HasLinesInside(loops, styleId, curves))
+				{
+					continue;
+				}
+
+				Color color = layers.MaterialColor(material) ?? layers.ColorOf(styleId);
+				if (regions.CreateSolid(loops, color))
+				{
+					continue;
+				}
+
+				foreach (Curve c in loops.SelectMany(l => l))
+				{
+					AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
+				}
+			}
+		}
+	}
+
+	private static bool HasLinesInside(List<CurveLoop> loops, ElementId styleId, List<(Curve, ElementId)> curves)
+	{
+		List<List<XYZ>> polygons = loops.Select(l => l.SelectMany(c => { IList<XYZ> t = c.Tessellate(); return t.Take(t.Count - 1); }).ToList()).ToList();
+		List<XYZ> all = polygons.SelectMany(p => p).ToList();
+		if (all.Count < 3)
+		{
+			return false;
+		}
+
+		double minX = all.Min(p => p.X), maxX = all.Max(p => p.X), minY = all.Min(p => p.Y), maxY = all.Max(p => p.Y);
+		int inside = 0;
+		foreach (var (curve, id) in curves)
+		{
+			if (id != styleId)
+			{
+				continue;
+			}
+
+			XYZ mid;
+			try
+			{
+				mid = curve.Evaluate(0.5, true);
+			}
+			catch (Exception)
+			{
+				continue;
+			}
+
+			if (mid.X <= minX || mid.X >= maxX || mid.Y <= minY || mid.Y >= maxY)
+			{
+				continue;
+			}
+
+			bool odd = false;
+			foreach (List<XYZ> poly in polygons)
+			{
+				for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+				{
+					XYZ a = poly[i], b = poly[j];
+					if ((a.Y > mid.Y) != (b.Y > mid.Y) && mid.X < (b.X - a.X) * (mid.Y - a.Y) / (b.Y - a.Y) + a.X)
+					{
+						odd = !odd;
+					}
+				}
+			}
+
+			if (odd && ++inside >= 3)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>Un punto interior de la cara (centro de su caja UV si cae dentro, o su primer vértice).</summary>
+	private static XYZ SamplePoint(Face face)
+	{
+		try
+		{
+			BoundingBoxUV box = face.GetBoundingBox();
+			UV center = (box.Min + box.Max) / 2.0;
+			if (face.IsInside(center))
+			{
+				return face.Evaluate(center);
+			}
+
+			return face.Triangulate()?.get_Triangle(0) is MeshTriangle t
+				? (t.get_Vertex(0) + t.get_Vertex(1) + t.get_Vertex(2)) / 3.0
+				: null;
+		}
+		catch (Exception)
+		{
+			return null;
 		}
 	}
 
@@ -890,6 +988,37 @@ public class ExplodeDwgCommand : IExternalCommand
 		public string NameOf(ElementId styleId) => Get(styleId).Name;
 
 		public Color ColorOf(ElementId styleId) => Get(styleId).Color;
+
+		private readonly Dictionary<ElementId, Color> _materialColors = new Dictionary<ElementId, Color>();
+
+		/// <summary>Color del material del relleno (Revit guarda ahí el color real del hatch importado), o null.</summary>
+		public Color MaterialColor(ElementId materialId)
+		{
+			if (materialId == null || materialId == ElementId.InvalidElementId)
+			{
+				return null;
+			}
+
+			if (!_materialColors.TryGetValue(materialId, out Color color))
+			{
+				try
+				{
+					color = (_doc.GetElement(materialId) as Material)?.Color;
+					if (color != null && (!color.IsValid || (color.Red > 250 && color.Green > 250 && color.Blue > 250)))
+					{
+						color = color.IsValid ? new Color(0, 0, 0) : null;
+					}
+				}
+				catch (Exception)
+				{
+					color = null;
+				}
+
+				_materialColors[materialId] = color;
+			}
+
+			return color;
+		}
 
 		private (string Name, Color Color) Get(ElementId styleId)
 		{

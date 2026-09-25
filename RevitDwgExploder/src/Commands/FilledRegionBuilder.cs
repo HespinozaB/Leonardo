@@ -30,7 +30,12 @@ internal sealed class FilledRegionBuilder
 
 	private bool _invisibleResolved;
 
-	private Plane _viewPlane;
+	/// <summary>
+	/// Planos candidatos donde crear las regiones. Revit exige que el contorno esté en el plano de la vista,
+	/// y según el tipo de vista ese plano es el plano de trabajo, el del nivel o el del origen de la vista;
+	/// el último candidato (null) usa la cota original del DWG. El que funciona pasa a ser el primero.
+	/// </summary>
+	private readonly List<Plane> _planes = new List<Plane>();
 
 	public int Created { get; private set; }
 
@@ -43,14 +48,29 @@ internal sealed class FilledRegionBuilder
 		_doc = doc;
 		_view = view;
 		_shortCurve = shortCurveTolerance;
-		try
+
+		XYZ normal = view.ViewDirection;
+		void AddPlane(Func<Plane> factory)
 		{
-			_viewPlane = view.SketchPlane?.GetPlane() ?? Plane.CreateByNormalAndOrigin(view.ViewDirection, view.Origin);
+			try
+			{
+				Plane plane = factory();
+				if (plane != null && !_planes.Any(p => p != null && Math.Abs((plane.Origin - p.Origin).DotProduct(p.Normal)) < 1E-06))
+				{
+					_planes.Add(plane);
+				}
+			}
+			catch (Exception)
+			{
+			}
 		}
-		catch (Exception)
-		{
-			_viewPlane = null;
-		}
+
+		AddPlane(() => view.SketchPlane?.GetPlane());
+		AddPlane(() => view is ViewPlan plan && plan.GenLevel != null
+			? Plane.CreateByNormalAndOrigin(normal, new XYZ(0, 0, plan.GenLevel.ProjectElevation))
+			: null);
+		AddPlane(() => Plane.CreateByNormalAndOrigin(normal, view.Origin));
+		_planes.Add(null);
 	}
 
 	/// <summary>Crea el Filled Region de un hatch del DWG. Devuelve true si se creó.</summary>
@@ -75,11 +95,10 @@ internal sealed class FilledRegionBuilder
 			return false;
 		}
 
-		List<CurveLoop> loops = hatch.Loops.Select(ToLoop).Where(l => l != null).ToList();
-		return CreateRegion(typeId, loops);
+		return CreateRegion(typeId, hatch.Loops);
 	}
 
-	/// <summary>Relleno sólido (sin archivo DWG): contornos ya como CurveLoop, color de la capa.</summary>
+	/// <summary>Relleno sólido a partir de contornos de Revit (mallas o láminas del CAD), con el color dado.</summary>
 	public bool CreateSolid(IList<CurveLoop> loops, Color color)
 	{
 		byte r = color != null && color.IsValid ? color.Red : (byte)0;
@@ -92,7 +111,7 @@ internal sealed class FilledRegionBuilder
 			return false;
 		}
 
-		var projected = new List<CurveLoop>();
+		var pointLoops = new List<List<XYZ>>();
 		foreach (CurveLoop loop in loops)
 		{
 			var points = new List<XYZ>();
@@ -102,35 +121,45 @@ internal sealed class FilledRegionBuilder
 				points.AddRange(tessellated.Take(tessellated.Count - 1));
 			}
 
-			CurveLoop clean = ToLoop(points);
-			if (clean != null)
-			{
-				projected.Add(clean);
-			}
+			pointLoops.Add(points);
 		}
 
-		return CreateRegion(typeId, projected);
+		return CreateRegion(typeId, pointLoops);
 	}
 
-	private bool CreateRegion(ElementId typeId, List<CurveLoop> loops)
+	private bool CreateRegion(ElementId typeId, List<List<XYZ>> pointLoops)
 	{
-		if (loops.Count == 0)
+		if (pointLoops.Count == 0)
 		{
 			Failed++;
 			return false;
 		}
 
-		// Primero todos los contornos juntos (así las islas quedan como huecos); si Revit los rechaza,
-		// se intenta cada contorno por separado.
-		if (TryCreate(typeId, loops))
+		// Primero todos los contornos juntos (así las islas quedan como huecos), probando cada plano.
+		foreach (Plane plane in _planes.ToList())
 		{
-			return true;
+			List<CurveLoop> loops = pointLoops.Select(p => ToLoop(p, plane)).Where(l => l != null).ToList();
+			if (loops.Count > 0 && TryCreate(typeId, loops))
+			{
+				Prefer(plane);
+				return true;
+			}
 		}
 
+		// Si Revit los rechaza juntos (contornos que se cruzan), cada contorno por separado.
 		bool any = false;
-		foreach (CurveLoop loop in loops)
+		foreach (List<XYZ> points in pointLoops)
 		{
-			any |= TryCreate(typeId, new List<CurveLoop> { loop });
+			foreach (Plane plane in _planes.ToList())
+			{
+				CurveLoop loop = ToLoop(points, plane);
+				if (loop != null && TryCreate(typeId, new List<CurveLoop> { loop }))
+				{
+					Prefer(plane);
+					any = true;
+					break;
+				}
+			}
 		}
 
 		if (!any)
@@ -139,6 +168,16 @@ internal sealed class FilledRegionBuilder
 		}
 
 		return any;
+	}
+
+	private void Prefer(Plane plane)
+	{
+		int index = _planes.IndexOf(plane);
+		if (index > 0)
+		{
+			_planes.RemoveAt(index);
+			_planes.Insert(0, plane);
+		}
 	}
 
 	private bool TryCreate(ElementId typeId, IList<CurveLoop> loops)
@@ -167,8 +206,8 @@ internal sealed class FilledRegionBuilder
 		}
 	}
 
-	/// <summary>Polígono cerrado proyectado al plano de la vista, sin tramos más cortos de lo que Revit admite.</summary>
-	private CurveLoop ToLoop(List<XYZ> points)
+	/// <summary>Polígono cerrado proyectado al plano indicado, sin tramos más cortos de lo que Revit admite.</summary>
+	private CurveLoop ToLoop(List<XYZ> points, Plane plane)
 	{
 		if (points == null || points.Count < 3)
 		{
@@ -176,8 +215,9 @@ internal sealed class FilledRegionBuilder
 		}
 
 		var clean = new List<XYZ>();
-		foreach (XYZ p in points.Select(Project))
+		foreach (XYZ raw in points)
 		{
+			XYZ p = Project(raw, plane);
 			if (clean.Count == 0 || clean[clean.Count - 1].DistanceTo(p) > _shortCurve * 1.5)
 			{
 				clean.Add(p);
@@ -210,15 +250,15 @@ internal sealed class FilledRegionBuilder
 		}
 	}
 
-	private XYZ Project(XYZ p)
+	private static XYZ Project(XYZ p, Plane plane)
 	{
-		if (_viewPlane == null)
+		if (plane == null)
 		{
 			return p;
 		}
 
-		double d = (p - _viewPlane.Origin).DotProduct(_viewPlane.Normal);
-		return p - _viewPlane.Normal.Multiply(d);
+		double d = (p - plane.Origin).DotProduct(plane.Normal);
+		return p - plane.Normal.Multiply(d);
 	}
 
 	// ------------------------------------------------------------------ Patrones de relleno

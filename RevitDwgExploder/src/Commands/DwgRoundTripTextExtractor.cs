@@ -97,6 +97,116 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 		return result;
 	}
 
+	/// <summary>
+	/// Hatch del CAD leídos del DWG reexportado (para CAD importados sin archivo original). Solo se devuelven
+	/// los que están en una capa del propio CAD y dentro de su caja, para no traer rellenos de otros elementos.
+	/// </summary>
+	public List<HatchRegion> ExtractHatches(ImportInstance importInstance)
+	{
+		var result = new List<HatchRegion>();
+		try
+		{
+			BoundingBoxXYZ bbox = importInstance.get_BoundingBox(_view);
+			if (bbox == null)
+			{
+				return result;
+			}
+
+			EnsureLoaded();
+			if (_cadDoc == null)
+			{
+				return result;
+			}
+
+			// Se exporta en pies: la escala es 1 salvo que los textos indiquen otra cosa.
+			double scale = _texts.Count > 0 ? ResolveScale(bbox) : 1.0;
+			if (scale <= 0.0)
+			{
+				scale = 1.0;
+			}
+
+			var layers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			try
+			{
+				foreach (Category sub in importInstance.Category.SubCategories)
+				{
+					layers.Add(sub.Name);
+				}
+			}
+			catch (Exception)
+			{
+			}
+
+			_hatches ??= DwgHatchReader.Read(_cadDoc, 1.0, Transform.Identity);
+
+			// Si Revit exportó las capas con otro nombre, se aceptan por posición, salvo que la vista ya tenga
+			// Filled Regions propios (que también se exportan como hatch y se duplicarían).
+			bool filterByLayer = layers.Count > 0 && (_hatches.Any(h => layers.Contains(h.Layer)) || ViewHasFilledRegions());
+			foreach (HatchRegion hatch in _hatches)
+			{
+				if (filterByLayer && !layers.Contains(hatch.Layer))
+				{
+					continue;
+				}
+
+				HatchRegion scaled = Scale(hatch, scale, (bbox.Min.Z + bbox.Max.Z) / 2.0);
+				List<XYZ> all = scaled.Loops.SelectMany(l => l).ToList();
+				if (all.Count == 0)
+				{
+					continue;
+				}
+
+				var center = new XYZ(all.Average(p => p.X), all.Average(p => p.Y), 0.0);
+				if (IsInside(center, bbox))
+				{
+					result.Add(scaled);
+				}
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return result;
+	}
+
+	private List<HatchRegion> _hatches;
+
+	private bool ViewHasFilledRegions()
+	{
+		try
+		{
+			return new FilteredElementCollector(_doc, _view.Id).OfClass(typeof(FilledRegion)).GetElementCount() > 0;
+		}
+		catch (Exception)
+		{
+			return true;
+		}
+	}
+
+	private static HatchRegion Scale(HatchRegion h, double scale, double z)
+	{
+		return new HatchRegion
+		{
+			Layer = h.Layer,
+			IsSolid = h.IsSolid,
+			PatternName = h.PatternName,
+			R = h.R,
+			G = h.G,
+			B = h.B,
+			Loops = h.Loops.Select(l => l.Select(p => new XYZ(p.X * scale, p.Y * scale, z)).ToList()).ToList(),
+			Grids = h.Grids.Select(g => new HatchGrid
+			{
+				Angle = g.Angle,
+				OriginX = g.OriginX * scale,
+				OriginY = g.OriginY * scale,
+				Offset = g.Offset * scale,
+				Shift = g.Shift * scale,
+				Segments = g.Segments.Select(v => v * scale).ToList()
+			}).ToList()
+		};
+	}
+
 	private void EnsureLoaded()
 	{
 		if (_loaded)

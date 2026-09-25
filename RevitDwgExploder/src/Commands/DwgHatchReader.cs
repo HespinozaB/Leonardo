@@ -170,6 +170,22 @@ internal static class DwgHatchReader
 				}
 			}
 
+			// Hatch "doble" (definido por el usuario con la opción Doble): si el DWG solo trae una familia de
+			// líneas, se añade la cruzada a 90° con la misma separación.
+			if (hatch.IsDouble && region.Grids.Count == 1)
+			{
+				HatchGrid g = region.Grids[0];
+				region.Grids.Add(new HatchGrid
+				{
+					Angle = NormalizeAngle(g.Angle + Math.PI / 2.0),
+					OriginX = g.OriginX,
+					OriginY = g.OriginY,
+					Offset = g.Offset,
+					Shift = 0.0,
+					Segments = new List<double>(g.Segments)
+				});
+			}
+
 			if (region.Grids.Count == 0)
 			{
 				region.IsSolid = true;

@@ -35,6 +35,20 @@ internal sealed class HatchAreaIndex
 
 	public bool HasLayer(string layer) => layer != null && _loopsByLayer.ContainsKey(layer);
 
+	/// <summary>True si el punto está dentro de algún hatch ya convertido (de cualquier capa).</summary>
+	public bool Contains(XYZ point)
+	{
+		foreach (List<List<XYZ>> loops in _loopsByLayer.Values)
+		{
+			if (IsInside(loops, point))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	/// <summary>
 	/// True si la curva está en una capa con hatch y queda dentro del área del hatch sin apoyarse en su
 	/// contorno (es decir, es una línea del patrón y no un borde real del dibujo).

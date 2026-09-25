@@ -18,6 +18,26 @@ Addin que convierte los DWG importados/vinculados de la vista activa (o los sele
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.5
+
+### Hatch que no se convertían
+- **Rellenos sólidos de CAD importados** (p.ej. los amarillos): Revit los entrega como láminas planas, no
+  solo como mallas; ahora ambas se convierten en Filled Region sólido, con el color del material del relleno
+  (el color real del hatch) o, si no tiene, el de su capa. Si la lámina tiene líneas de patrón dentro, no se
+  rellena en sólido (es un hatch con patrón).
+- **Hatch con patrón sin el DWG original**: se leen del DWG que el addin ya exporta de la vista (con su
+  patrón, separación y color), filtrados por las capas y el área del CAD.
+- **Plano de la vista**: la región se prueba en el plano de trabajo de la vista, en el del nivel, en el del
+  origen de la vista y en la cota original del DWG, hasta que Revit la acepta (antes, si el contorno no
+  estaba exactamente en el plano esperado, la región se descartaba).
+- **Unidades del DWG**: si el DWG declara unas unidades pero se insertó en Revit con otras (p.ej. "sin
+  unidades" importado en metros), se detectan las unidades reales comparando la geometría con la instancia;
+  así hatch, tipos de línea y textos caen en su sitio.
+- **Hatch de doble línea**: hatch definidos por el usuario con la opción *Doble* que traen una sola familia de
+  líneas ahora generan también la familia cruzada a 90°.
+- Un relleno de Revit solo se descarta si ya lo cubre un hatch convertido (antes se descartaban todos los de
+  la misma capa, aunque su hatch no se hubiera podido convertir).
+
 ## Cambios de la versión 1.4
 
 ### Hatch / texturas
