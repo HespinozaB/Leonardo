@@ -7,9 +7,9 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.3.0</Version>
-    <AssemblyVersion>1.3.0.0</AssemblyVersion>
-    <FileVersion>1.3.0.0</FileVersion>
+    <Version>1.4.0</Version>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <FileVersion>1.4.0.0</FileVersion>
     <Product>RevitDwgExploder</Product>
     <Description>Explota DWGs importados/vinculados en Revit preservando escala, texto y estilos de línea.</Description>
     <OutputPath>bin\$(Configuration)\RevitDwgExploder-2024\</OutputPath>

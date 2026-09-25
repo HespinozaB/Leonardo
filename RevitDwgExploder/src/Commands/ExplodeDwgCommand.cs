@@ -14,8 +14,8 @@ namespace RevitDwgExploder.Commands;
 [Regeneration(RegenerationOption.Manual)]
 public class ExplodeDwgCommand : IExternalCommand
 {
-	/// <summary>Mínimo de respaldo (0.4 mm) si no se puede averiguar el mínimo real que acepta Revit.</summary>
-	private const double FallbackMinTextSizeFeet = 1.0 / 768.0;
+	/// <summary>Tamaño de texto mínimo que admite Revit: 0.2526 mm en papel.</summary>
+	private const double MinTextSizeFeet = 0.2526 / 304.8;
 
 	private const double MaxTextSizeFeet = 1.0;
 
@@ -112,11 +112,13 @@ public class ExplodeDwgCommand : IExternalCommand
 
 			// Textos del DWG más pequeños que lo que Revit permite a la escala de la vista: se ofrece
 			// ajustar la escala de la vista para que conserven su tamaño relativo al dibujo.
-			double minTextSize = TextNoteTypeCache.ProbeMinimumTextSize(doc);
+			double minTextSize = MinTextSizeFeet;
 			AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats);
 			var textTypeCache = new TextNoteTypeCache(doc, view.Scale, minTextSize);
 
 			var lineStyles = new LineStyleMapper(doc);
+			var regions = new FilledRegionBuilder(doc, view, commandData.Application.Application.ShortCurveTolerance);
+			var layers = new LayerLookup(doc);
 			var geometryOptions = new Options
 			{
 				View = view,
@@ -126,6 +128,47 @@ public class ExplodeDwgCommand : IExternalCommand
 
 			foreach (ImportInstance instance in targets)
 			{
+				DwgTextImporter.FileCache.Entry source = fileCache.ForInstance(instance.Id);
+
+				// a) Hatch del DWG → Filled Regions (se crean primero para que queden debajo de líneas y textos).
+				var hatchAreas = new HatchAreaIndex(Math.Max(minLength * 2.0, 0.003));
+				if (source != null)
+				{
+					foreach (HatchRegion hatch in DwgHatchReader.Read(source.Cad, source.FeetPerUnit, instance.GetTransform()))
+					{
+						if (regions.Create(hatch))
+						{
+							hatchAreas.Add(hatch);
+						}
+					}
+				}
+
+				// b) Geometría del CAD → Detail Lines (sin las líneas/rellenos de los hatch ya convertidos).
+				var curves = new List<(Curve Curve, ElementId StyleId)>();
+				var fills = new List<(GeometryObject Fill, ElementId StyleId)>();
+				GeometryElement geometry = instance.get_Geometry(geometryOptions);
+				if (geometry != null)
+				{
+					var seen = new HashSet<(long, long, long, long, long, long, long)>();
+					CollectCurves(geometry, curves, fills, seen, minLength, ref stats.Skipped);
+					ConvertFills(fills, hatchAreas, regions, layers, curves, seen, minLength, stats);
+					if (!hatchAreas.IsEmpty)
+					{
+						int before = curves.Count;
+						curves.RemoveAll(c => hatchAreas.IsPatternLine(layers.NameOf(c.StyleId), c.Curve));
+						stats.HatchLinesReplaced += before - curves.Count;
+					}
+				}
+
+				DwgLinetypeIndex linetypes = null;
+				if (source != null)
+				{
+					linetypes = DwgLinetypeIndex.Build(source.Cad, source.FeetPerUnit, instance.GetTransform(), view.Scale);
+				}
+
+				CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
+
+				// c) Textos (al final, por encima de todo).
 				var (texts, isOcr) = textsByInstance[instance.Id];
 				foreach (DwgTextImporter.DwgTextEntry entry in texts)
 				{
@@ -152,27 +195,14 @@ public class ExplodeDwgCommand : IExternalCommand
 					}
 				}
 
-				var curves = new List<(Curve Curve, ElementId StyleId)>();
-				GeometryElement geometry = instance.get_Geometry(geometryOptions);
-				if (geometry != null)
-				{
-					var seen = new HashSet<(long, long, long, long, long, long, long)>();
-					CollectCurves(geometry, curves, seen, minLength, ref stats.Skipped);
-				}
-
-				DwgLinetypeIndex linetypes = null;
-				DwgTextImporter.FileCache.Entry source = fileCache.ForInstance(instance.Id);
-				if (source != null)
-				{
-					linetypes = DwgLinetypeIndex.Build(source.Cad, source.FeetPerUnit, instance.GetTransform(), view.Scale);
-				}
-
-				CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
 				stats.Processed++;
 			}
 
 			stats.CreatedStyles = lineStyles.CreatedStyles;
 			stats.CreatedPatterns = lineStyles.CreatedPatterns;
+			stats.FilledRegions = regions.Created;
+			stats.FillPatterns = regions.CreatedPatterns;
+			stats.FailedRegions = regions.Failed;
 			if (tx.Commit() != TransactionStatus.Committed)
 			{
 				message = "No se pudo confirmar la transacción.";
@@ -199,6 +229,10 @@ public class ExplodeDwgCommand : IExternalCommand
 		public int OldScale;
 		public int NewScale;
 		public int ClampedTexts;
+		public int FilledRegions;
+		public int FillPatterns;
+		public int FailedRegions;
+		public int HatchLinesReplaced;
 	}
 
 	private static void ShowSummary(Stats s)
@@ -216,6 +250,15 @@ public class ExplodeDwgCommand : IExternalCommand
 		{
 			styles += $"\nLíneas con tipo de línea leído del DWG original: {s.PatternedLines} (patrones de línea creados: {s.CreatedPatterns}).";
 		}
+		if (s.FilledRegions > 0 || s.FailedRegions > 0)
+		{
+			styles += $"\nHatch/rellenos convertidos en Filled Regions: {s.FilledRegions} (patrones de relleno creados: {s.FillPatterns}).";
+			if (s.FailedRegions > 0)
+			{
+				styles += $" {s.FailedRegions} no se pudieron convertir y se dejaron como líneas.";
+			}
+		}
+
 		if (s.NewScale > 0)
 		{
 			styles += $"\nEscala de la vista cambiada de 1:{s.OldScale} a 1:{s.NewScale} para que los textos conserven el tamaño del DWG.";
@@ -409,67 +452,10 @@ public class ExplodeDwgCommand : IExternalCommand
 		{
 			_doc = doc;
 			_viewScale = Math.Max(viewScale, 1);
-			_minTextSize = minTextSize > 0.0 ? minTextSize : FallbackMinTextSizeFeet;
+			_minTextSize = minTextSize > 0.0 ? minTextSize : MinTextSizeFeet;
 		}
 
 		public bool IsBelowMinimum(double modelHeightFeet) => modelHeightFeet * TextHeightFactor / _viewScale < _minTextSize * 0.95;
-
-		/// <summary>
-		/// Averigua el tamaño de texto más pequeño que Revit acepta en un tipo de texto, probando sobre un
-		/// tipo temporal dentro de una subtransacción que luego se deshace.
-		/// </summary>
-		public static double ProbeMinimumTextSize(Document doc)
-		{
-			try
-			{
-				if (!(doc.GetElement(doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType)) is TextNoteType baseType))
-				{
-					baseType = new FilteredElementCollector(doc).OfClass(typeof(TextNoteType)).Cast<TextNoteType>().FirstOrDefault();
-				}
-
-				if (baseType == null)
-				{
-					return FallbackMinTextSizeFeet;
-				}
-
-				using var sub = new SubTransaction(doc);
-				sub.Start();
-				try
-				{
-					var probe = baseType.Duplicate("DWG probe " + Guid.NewGuid().ToString("N")) as TextNoteType;
-					Parameter size = probe?.get_Parameter(BuiltInParameter.TEXT_SIZE);
-					if (size == null)
-					{
-						return FallbackMinTextSizeFeet;
-					}
-
-					// 0.02 mm … 0.4 mm
-					foreach (double mm in new[] { 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4 })
-					{
-						double feet = mm / 304.8;
-						try
-						{
-							if (size.Set(feet) && Math.Abs(size.AsDouble() - feet) < feet * 0.01)
-							{
-								return feet;
-							}
-						}
-						catch (Exception)
-						{
-						}
-					}
-				}
-				finally
-				{
-					sub.RollBack();
-				}
-			}
-			catch (Exception)
-			{
-			}
-
-			return FallbackMinTextSizeFeet;
-		}
 
 		public ElementId Get(double modelHeightFeet, double widthFactor, string fontName, bool bold)
 		{
@@ -724,7 +710,7 @@ public class ExplodeDwgCommand : IExternalCommand
 		return curve.CreateTransformed(Transform.CreateTranslation(normal.Multiply(-d0)));
 	}
 
-	private static void CollectCurves(GeometryElement geometry, List<(Curve, ElementId)> output,
+	private static void CollectCurves(GeometryElement geometry, List<(Curve, ElementId)> output, List<(GeometryObject, ElementId)> fills,
 		HashSet<(long, long, long, long, long, long, long)> seen, double minLength, ref int skipped)
 	{
 		foreach (GeometryObject obj in geometry)
@@ -735,7 +721,7 @@ public class ExplodeDwgCommand : IExternalCommand
 					GeometryElement instanceGeometry = instance.GetInstanceGeometry();
 					if (instanceGeometry != null)
 					{
-						CollectCurves(instanceGeometry, output, seen, minLength, ref skipped);
+						CollectCurves(instanceGeometry, output, fills, seen, minLength, ref skipped);
 					}
 
 					break;
@@ -751,6 +737,13 @@ public class ExplodeDwgCommand : IExternalCommand
 
 					break;
 				case Solid solid:
+					if (solid.Faces.Size > 0 && Math.Abs(solid.Volume) < 1E-09)
+					{
+						// Lámina plana: es un relleno (hatch) del CAD, se decide después qué hacer con él.
+						fills.Add((solid, obj.GraphicsStyleId));
+						break;
+					}
+
 					foreach (Edge edge in solid.Edges)
 					{
 						AddCurve(edge.AsCurve(), obj.GraphicsStyleId, output, seen, minLength, ref skipped);
@@ -758,14 +751,7 @@ public class ExplodeDwgCommand : IExternalCommand
 
 					break;
 				case Mesh mesh:
-					for (int i = 0; i < mesh.NumTriangles; i++)
-					{
-						MeshTriangle triangle = mesh.get_Triangle(i);
-						AddSegment(triangle.get_Vertex(0), triangle.get_Vertex(1), obj.GraphicsStyleId, output, seen, minLength, ref skipped);
-						AddSegment(triangle.get_Vertex(1), triangle.get_Vertex(2), obj.GraphicsStyleId, output, seen, minLength, ref skipped);
-						AddSegment(triangle.get_Vertex(2), triangle.get_Vertex(0), obj.GraphicsStyleId, output, seen, minLength, ref skipped);
-					}
-
+					fills.Add((mesh, obj.GraphicsStyleId));
 					break;
 			}
 		}
@@ -841,6 +827,99 @@ public class ExplodeDwgCommand : IExternalCommand
 		catch (Exception)
 		{
 			skipped++;
+		}
+	}
+
+	/// <summary>
+	/// Rellenos que Revit muestra en el CAD (mallas y láminas planas):
+	/// - si su capa tiene hatch ya convertidos desde el DWG original, se descartan (no duplicar);
+	/// - una malla (relleno sólido) se convierte en un Filled Region sólido con el color de la capa;
+	/// - en otro caso se dibuja solo su contorno (antes se dibujaban todas las aristas de los triángulos).
+	/// </summary>
+	private static void ConvertFills(List<(GeometryObject Fill, ElementId StyleId)> fills, HatchAreaIndex hatchAreas, FilledRegionBuilder regions,
+		LayerLookup layers, List<(Curve, ElementId)> curves, HashSet<(long, long, long, long, long, long, long)> seen, double minLength, Stats stats)
+	{
+		foreach (var (fill, styleId) in fills)
+		{
+			if (hatchAreas.HasLayer(layers.NameOf(styleId)))
+			{
+				continue;
+			}
+
+			if (fill is Mesh mesh)
+			{
+				List<CurveLoop> outline = HatchAreaIndex.MeshOutline(mesh, minLength);
+				if (outline.Count > 0 && regions.CreateSolid(outline, layers.ColorOf(styleId)))
+				{
+					continue;
+				}
+
+				foreach (Curve c in outline.SelectMany(l => l))
+				{
+					AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
+				}
+			}
+			else if (fill is Solid solid)
+			{
+				foreach (Face face in solid.Faces)
+				{
+					foreach (CurveLoop loop in face.GetEdgesAsCurveLoops())
+					{
+						foreach (Curve c in loop)
+						{
+							AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/// <summary>Nombre de capa (subcategoría del CAD) y color de cada estilo gráfico, con caché.</summary>
+	private sealed class LayerLookup
+	{
+		private readonly Document _doc;
+
+		private readonly Dictionary<ElementId, (string Name, Color Color)> _cache = new Dictionary<ElementId, (string, Color)>();
+
+		public LayerLookup(Document doc)
+		{
+			_doc = doc;
+		}
+
+		public string NameOf(ElementId styleId) => Get(styleId).Name;
+
+		public Color ColorOf(ElementId styleId) => Get(styleId).Color;
+
+		private (string Name, Color Color) Get(ElementId styleId)
+		{
+			if (styleId == null || styleId == ElementId.InvalidElementId)
+			{
+				return (null, null);
+			}
+
+			if (!_cache.TryGetValue(styleId, out var entry))
+			{
+				try
+				{
+					Category category = (_doc.GetElement(styleId) as GraphicsStyle)?.GraphicsStyleCategory;
+					Color color = category?.LineColor;
+					if (color != null && color.IsValid && color.Red > 250 && color.Green > 250 && color.Blue > 250)
+					{
+						color = new Color(0, 0, 0);
+					}
+
+					entry = (category?.Name, color);
+				}
+				catch (Exception)
+				{
+					entry = (null, null);
+				}
+
+				_cache[styleId] = entry;
+			}
+
+			return entry;
 		}
 	}
 
@@ -933,21 +1012,30 @@ public class ExplodeDwgCommand : IExternalCommand
 
 	/// <summary>
 	/// Elimina las advertencias (p.ej. "línea ligeramente fuera de eje") para que Revit no muestre
-	/// un diálogo por cada una y la confirmación sea mucho más rápida.
+	/// un diálogo por cada una y la confirmación sea mucho más rápida, y resuelve los errores puntuales.
 	/// </summary>
 	private sealed class WarningSwallower : IFailuresPreprocessor
 	{
 		public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
 		{
+			bool resolvedErrors = false;
 			foreach (FailureMessageAccessor failure in failuresAccessor.GetFailureMessages())
 			{
-				if (failure.GetSeverity() == FailureSeverity.Warning)
+				FailureSeverity severity = failure.GetSeverity();
+				if (severity == FailureSeverity.Warning)
 				{
 					failuresAccessor.DeleteWarning(failure);
 				}
+				else if (severity == FailureSeverity.Error && failure.HasResolutions())
+				{
+					// Un error en un elemento (p.ej. un Filled Region con contorno inválido) no debe deshacer
+					// todo el resultado: se aplica la resolución por defecto, que elimina solo ese elemento.
+					failuresAccessor.ResolveFailure(failure);
+					resolvedErrors = true;
+				}
 			}
 
-			return FailureProcessingResult.Continue;
+			return resolvedErrors ? FailureProcessingResult.ProceedWithCommit : FailureProcessingResult.Continue;
 		}
 	}
 }

@@ -18,12 +18,34 @@ Addin que convierte los DWG importados/vinculados de la vista activa (o los sele
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.4
+
+### Hatch / texturas
+- Los **HATCH** del DWG se convierten en **Filled Regions** nativos (también los que están dentro de bloques):
+  - hatch con patrón → se crea un **patrón de relleno de modelo** `DWG-<patrón> <separación>mm` con las mismas
+    líneas, ángulos, separación y trazos que en el DWG (queda fijo al dibujo, a su escala real);
+  - hatch sólido / degradado → relleno sólido;
+  - color del hatch (o de su capa/bloque) como color del patrón; tipos `DWG-<patrón> R-G-B`, sin fondo
+    (transparentes) y con contorno de líneas invisibles; se respetan las islas (huecos).
+  - Si Revit no acepta el patrón exacto se intenta una versión simplificada, luego el patrón `IMPORT-<nombre>`
+    que Revit creó al importar, y si nada funciona se conservan las líneas como antes.
+- Se eliminan las líneas y rellenos con los que Revit dibujaba esos hatch, para que no queden duplicados.
+- Sin el DWG original (importado sin archivo): los rellenos sólidos que Revit muestra se convierten en Filled
+  Regions sólidos con el color de la capa, y del resto solo se dibuja el contorno (antes se dibujaban todas las
+  aristas de los triángulos). Para convertir hatch con patrón hace falta el .dwg original (vinculado o
+  seleccionado en el diálogo).
+- Orden de dibujo: Filled Regions → líneas → textos.
+- Si un elemento concreto da error al confirmar, se elimina solo ese elemento en vez de deshacer todo.
+
+### Textos
+- Tamaño mínimo de texto fijo en **0.2526 mm** (el mínimo de Revit); se usa para el aviso de cambio de escala.
+
 ## Cambios de la versión 1.3
 
 ### Tamaño de texto según la escala del DWG
 - Antes los textos tenían un tamaño mínimo fijo de 0.4 mm en papel: con DWG pequeños (o insertados a
   escala reducida) todos los textos quedaban "topados" en ese mínimo, salían del mismo tamaño y más grandes
-  que en el DWG. Ahora el addin averigua el **mínimo real que acepta Revit** y solo limita por debajo de él.
+  que en el DWG. Ahora solo se limita por debajo del mínimo real de Revit (0.2526 mm desde la 1.4).
 - Si aun así muchos textos quedarían por debajo del mínimo a la escala de la vista, el addin **propone cambiar
   la escala de la vista** (p.ej. de 1:100 a 1:5) para que los textos mantengan el mismo tamaño relativo al
   dibujo que en el DWG. Las líneas no cambian; solo las anotaciones. El resumen indica cuántos textos
