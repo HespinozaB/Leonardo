@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>RevitDwgExploder</Name>
+    <Assembly>RevitDwgExploder-2024\RevitDwgExploder.dll</Assembly>
+    <AddInId>4C1B1A6E-2C7B-4E9D-9B0C-7B7B6E8D8E02</AddInId>
+    <FullClassName>RevitDwgExploder.App</FullClassName>
+    <VendorId>RDWG</VendorId>
+    <VendorDescription>RevitDwgExploder</VendorDescription>
+  </AddIn>
+</RevitAddIns>
