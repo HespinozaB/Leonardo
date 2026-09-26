@@ -1109,9 +1109,9 @@ public class ExplodeDwgCommand : IExternalCommand
 				try
 				{
 					color = (_doc.GetElement(materialId) as Material)?.Color;
-					if (color != null && (!color.IsValid || (color.Red > 250 && color.Green > 250 && color.Blue > 250)))
+					if (color != null && !color.IsValid)
 					{
-						color = color.IsValid ? new Color(0, 0, 0) : null;
+						color = null;
 					}
 				}
 				catch (Exception)
@@ -1138,11 +1138,7 @@ public class ExplodeDwgCommand : IExternalCommand
 				{
 					Category category = (_doc.GetElement(styleId) as GraphicsStyle)?.GraphicsStyleCategory;
 					Color color = category?.LineColor;
-					if (color != null && color.IsValid && color.Red > 250 && color.Green > 250 && color.Blue > 250)
-					{
-						color = new Color(0, 0, 0);
-					}
-
+					// El blanco se conserva: en los rellenos suele ser una máscara que tapa lo que hay debajo.
 					entry = (category?.Name, color);
 				}
 				catch (Exception)

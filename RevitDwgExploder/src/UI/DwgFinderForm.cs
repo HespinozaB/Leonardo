@@ -73,7 +73,7 @@ internal sealed class DwgFinderForm : Form
 	{
 		Text = "EMASY · Buscador DWG's";
 		StartPosition = FormStartPosition.CenterScreen;
-		Size = new Size(1000, 560);
+		Size = new Size(1150, 560);
 		MinimumSize = new Size(700, 360);
 		Font = new Font("Segoe UI", 9f);
 		ShowInTaskbar = false;
@@ -99,7 +99,8 @@ internal sealed class DwgFinderForm : Form
 		_list.GridLines = true;
 		_list.Columns.Add("Archivo", 230);
 		_list.Columns.Add("Tipo", 150);
-		_list.Columns.Add("Ubicación", 190);
+		_list.Columns.Add("Ubicación", 110);
+		_list.Columns.Add("Vista", 220);
 		_list.Columns.Add("Nivel", 90);
 		_list.Columns.Add("Estado", 90);
 		_list.Columns.Add("Fijado", 55);
@@ -176,7 +177,7 @@ internal sealed class DwgFinderForm : Form
 			_ => rows
 		};
 
-		rows = _sortColumn == 6
+		rows = _sortColumn == 7
 			? (_sortAscending ? rows.OrderBy(e => e.Id) : rows.OrderByDescending(e => e.Id))
 			: (_sortAscending
 				? rows.OrderBy(e => Columns(e)[_sortColumn], StringComparer.CurrentCultureIgnoreCase)
@@ -209,6 +210,7 @@ internal sealed class DwgFinderForm : Form
 		e.Name ?? string.Empty,
 		e.Kind ?? string.Empty,
 		e.Location ?? string.Empty,
+		e.Views ?? string.Empty,
 		e.Level ?? string.Empty,
 		e.Status ?? string.Empty,
 		e.Pinned ? "Sí" : "No",

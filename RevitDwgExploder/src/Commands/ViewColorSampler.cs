@@ -156,8 +156,8 @@ internal sealed class ViewColorSampler : IDisposable
 	}
 
 	/// <summary>
-	/// Color que Revit muestra en ese punto (moda de un pequeño entorno, ignorando el blanco del fondo y
-	/// las líneas finas). Null si ahí no hay relleno visible.
+	/// Color que Revit muestra en ese punto (moda de un pequeño entorno, ignorando las líneas finas).
+	/// Null si no hay un color claramente dominante.
 	/// </summary>
 	public Color Sample(XYZ world)
 	{
@@ -183,7 +183,8 @@ internal sealed class ViewColorSampler : IDisposable
 
 				DrawingColor c = _bitmap.GetPixel(x, y);
 				total++;
-				if (c.A < 128 || (c.R > 245 && c.G > 245 && c.B > 245))
+				// El blanco también cuenta: un relleno blanco (máscara) es un color válido.
+				if (c.A < 128)
 				{
 					continue;
 				}

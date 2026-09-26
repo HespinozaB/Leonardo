@@ -72,7 +72,8 @@ internal static class DwgHatchReader
 
 		try
 		{
-			Collect(cad.Entities, Matrix4.Identity, null, feetPerUnit, instanceTransform, result, 0);
+			// En orden de dibujo del DWG (traer al frente / enviar al fondo): en Revit, lo creado después queda encima.
+			Collect(Sorted(cad.ModelSpace) ?? cad.Entities, Matrix4.Identity, null, feetPerUnit, instanceTransform, result, 0);
 		}
 		catch (Exception)
 		{
@@ -108,7 +109,7 @@ internal static class DwgHatchReader
 					continue;
 				}
 
-				Collect(insert.Block.Entities, child, ResolveColor(entity, byBlockColor), toFeet, instanceTransform, output, depth + 1);
+				Collect(Sorted(insert.Block) ?? insert.Block.Entities, child, ResolveColor(entity, byBlockColor), toFeet, instanceTransform, output, depth + 1);
 				continue;
 			}
 
@@ -122,6 +123,18 @@ internal static class DwgHatchReader
 			{
 				output.Add(region);
 			}
+		}
+	}
+
+	private static IEnumerable<Entity> Sorted(BlockRecord block)
+	{
+		try
+		{
+			return block?.GetSortedEntities().ToList();
+		}
+		catch (Exception)
+		{
+			return null;
 		}
 	}
 
@@ -383,13 +396,10 @@ internal static class DwgHatchReader
 				return;
 			}
 
+			// Un blanco "real" (color verdadero o ACI 255) se respeta: suele ser un hatch usado como máscara.
 			region.R = color.R;
 			region.G = color.G;
 			region.B = color.B;
-			if (region.R > 250 && region.G > 250 && region.B > 250)
-			{
-				region.R = region.G = region.B = 0;
-			}
 		}
 		catch (Exception)
 		{

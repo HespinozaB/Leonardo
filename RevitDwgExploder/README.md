@@ -35,6 +35,21 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.8
+
+### Rellenos (hatch) negros donde el DWG tenía máscaras blancas
+- Los hatch **blancos** del DWG (usados como máscara para tapar parte de otros rellenos) se convertían en
+  negros: el addin pasaba todo blanco a negro y, al leer el color de la imagen, ignoraba el blanco como si
+  fuera el fondo. Ahora el blanco real se conserva (solo el color 7 de AutoCAD, que en papel es negro, se
+  imprime negro) y el blanco leído de la imagen cuenta como color del relleno.
+- Los hatch se crean en el **orden de dibujo del DWG** (traer al frente / enviar al fondo), así cada máscara
+  o relleno queda encima o debajo de los demás igual que en AutoCAD.
+
+### Buscador DWG's
+- Nueva columna **Vista**: la vista propia del CAD o, si es de modelo, todas las vistas donde se ve.
+  La columna *Ubicación* indica si es "Solo en su vista" o "Modelo". El buscador de texto también filtra por vista.
+- **Ubicar** abre una vista donde se vea el CAD si no se ve en la vista activa.
+
 ## Cambios de la versión 1.7
 
 ### Nuevo: Buscador DWG's

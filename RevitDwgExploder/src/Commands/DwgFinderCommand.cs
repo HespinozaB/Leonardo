@@ -25,6 +25,9 @@ internal sealed class DwgFinderEntry
 
 	public string Location;
 
+	/// <summary>Vista(s) donde se ve el CAD: su vista propia, o todas las vistas donde aparece.</summary>
+	public string Views;
+
 	public string Level;
 
 	public string Status;
@@ -112,10 +115,20 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			return "Los archivos sin instancias no tienen ubicación en el modelo.";
 		}
 
-		// Un CAD colocado en una sola vista se ubica abriendo esa vista.
+		// Si el CAD no se ve en la vista activa, se abre una vista donde sí se vea (su vista propia si la tiene).
 		ElementId ownerView = doc.GetElement(instances[0]).OwnerViewId;
-		if (ownerView != ElementId.InvalidElementId && instances.All(id => doc.GetElement(id).OwnerViewId == ownerView)
-			&& doc.GetElement(ownerView) is View view && uiDoc.ActiveView.Id != ownerView)
+		bool visibleHere = new FilteredElementCollector(doc, uiDoc.ActiveView.Id).OfClass(typeof(ImportInstance)).ToElementIds().Any(instances.Contains);
+		View view = null;
+		if (ownerView != ElementId.InvalidElementId && instances.All(id => doc.GetElement(id).OwnerViewId == ownerView))
+		{
+			view = uiDoc.ActiveView.Id != ownerView ? doc.GetElement(ownerView) as View : null;
+		}
+		else if (!visibleHere)
+		{
+			view = FindViewShowing(doc, instances, uiDoc.ActiveView.Id);
+		}
+
+		if (view != null)
 		{
 			try
 			{
@@ -194,6 +207,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 	{
 		var result = new List<DwgFinderEntry>();
 		var usedTypes = new HashSet<long>();
+		Dictionary<ElementId, List<string>> viewsByInstance = ViewsByInstance(doc);
 		foreach (ImportInstance instance in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)).Cast<ImportInstance>())
 		{
 			Element type = doc.GetElement(instance.GetTypeId());
@@ -206,6 +220,9 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 				Name = type?.Name ?? instance.Name,
 				Kind = instance.IsLinked ? "Vinculado" : "Importado",
 				Location = LocationOf(doc, instance),
+				Views = viewsByInstance.TryGetValue(instance.Id, out List<string> views) && views.Count > 0
+					? string.Join(", ", views)
+					: "(no visible en ninguna vista)",
 				Level = LevelOf(doc, instance),
 				Status = StatusOf(type, instance.IsLinked),
 				Pinned = instance.Pinned,
@@ -229,6 +246,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 				Name = type.Name,
 				Kind = (linked ? "Vinculado" : "Importado") + " (sin instancias)",
 				Location = "—",
+				Views = "—",
 				Level = "—",
 				Status = StatusOf(type, linked),
 				Pinned = false,
@@ -239,14 +257,65 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		return result.OrderBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
 	}
 
-	private static string LocationOf(Document doc, ImportInstance instance)
+	private static string LocationOf(Document doc, ImportInstance instance) =>
+		instance.OwnerViewId != ElementId.InvalidElementId ? "Solo en su vista" : "Modelo";
+
+	/// <summary>
+	/// Vistas donde se ve cada CAD. Un CAD "solo vista actual" pertenece a una vista; uno de modelo puede
+	/// verse en varias (plantas del mismo nivel, secciones, 3D…), así que se revisa cada vista gráfica.
+	/// </summary>
+	private static Dictionary<ElementId, List<string>> ViewsByInstance(Document doc)
 	{
-		if (instance.OwnerViewId != ElementId.InvalidElementId && doc.GetElement(instance.OwnerViewId) is View view)
+		var result = new Dictionary<ElementId, List<string>>();
+		IEnumerable<View> views = new FilteredElementCollector(doc)
+			.OfClass(typeof(View))
+			.Cast<View>()
+			.Where(v => !v.IsTemplate && v.CanBePrinted && v.ViewType != ViewType.Schedule && v.ViewType != ViewType.DrawingSheet)
+			.OrderBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase);
+		foreach (View view in views)
 		{
-			return "Vista: " + view.Name;
+			try
+			{
+				foreach (ElementId id in new FilteredElementCollector(doc, view.Id).OfClass(typeof(ImportInstance)).ToElementIds())
+				{
+					if (!result.TryGetValue(id, out List<string> names))
+					{
+						names = new List<string>();
+						result[id] = names;
+					}
+
+					names.Add(view.Name);
+				}
+			}
+			catch (Exception)
+			{
+			}
 		}
 
-		return "Modelo (todas las vistas)";
+		return result;
+	}
+
+	/// <summary>Primera vista (distinta de la activa) donde se ven los CAD indicados.</summary>
+	private static View FindViewShowing(Document doc, List<ElementId> ids, ElementId skip)
+	{
+		var wanted = new HashSet<ElementId>(ids);
+		foreach (View view in new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()
+			.Where(v => !v.IsTemplate && v.CanBePrinted && v.Id != skip && v.ViewType != ViewType.Schedule && v.ViewType != ViewType.DrawingSheet)
+			.OrderBy(v => v.ViewType == ViewType.FloorPlan ? 0 : v.ViewType == ViewType.ThreeD ? 2 : 1))
+		{
+			try
+			{
+				if (new FilteredElementCollector(doc, view.Id).OfClass(typeof(ImportInstance)).ToElementIds().Any(wanted.Contains))
+				{
+					return view;
+				}
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		return null;
 	}
 
 	private static string LevelOf(Document doc, ImportInstance instance)
