@@ -3,3 +3,5 @@ obj/
 *.user
 .vs/
 dist/
+installer/bin/
+installer/obj/

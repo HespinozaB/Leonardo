@@ -19,6 +19,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- El instalador es un proyecto aparte. -->
+    <Compile Remove="installer\**" />
+    <EmbeddedResource Remove="installer\**" />
+    <None Remove="installer\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Ensamblados de referencia de Revit 2024 (no se copian a la salida). -->
     <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2024.3.60" PrivateAssets="all" ExcludeAssets="runtime" />
     <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="2024.3.60" PrivateAssets="all" ExcludeAssets="runtime" />

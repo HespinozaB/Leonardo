@@ -8,16 +8,28 @@ Addin con dos comandos en la pestaña **EMASY** → grupo **DWG Tools**:
 
 ## Instalación
 
-1. Borrar la versión anterior si existe: `RevitDwgExploder.addin` y la carpeta `RevitDwgExploder-2024/`
-   (tienen el mismo identificador y Revit avisaría de un addin duplicado).
-2. Copiar `EMASY.addin` y la carpeta `EMASY-2024/` a `%AppData%\Autodesk\Revit\Addins\2024\`.
-3. Si Windows bloqueó los DLL descargados: clic derecho → Propiedades → *Desbloquear*.
-4. Abrir Revit 2024 → pestaña **EMASY** → grupo **DWG Tools** → **Explotar DWGs** / **Buscador DWG's**.
+### Con el instalador (recomendado)
+1. Descargar `EMASY-DWGTools-2024-Setup.exe`.
+2. Cerrar Revit y ejecutar el `.exe`. Como no está firmado digitalmente, Windows puede mostrar
+   "Windows protegió su PC": pulsar **Más información → Ejecutar de todas formas** (solo la primera vez).
+3. Pulsar **Instalar** (o **Actualizar**). No necesita permisos de administrador.
+
+El instalador copia el addin a `%AppData%\Autodesk\Revit\Addins\2024\`, elimina versiones anteriores
+(incluida `RevitDwgExploder`) y **desbloquea todos los archivos** automáticamente. También permite
+**Desinstalar**. Uso sin ventana: `EMASY-DWGTools-2024-Setup.exe /silent` (o `/silent /uninstall`).
+
+### Manual (ZIP)
+1. **Antes de extraer**, clic derecho sobre el ZIP → Propiedades → *Desbloquear*: así ningún archivo
+   extraído queda bloqueado (no hace falta desbloquearlos uno a uno).
+2. Borrar la versión anterior si existe (`RevitDwgExploder.addin` / `RevitDwgExploder-2024/`).
+3. Copiar `EMASY.addin` y la carpeta `EMASY-2024/` a `%AppData%\Autodesk\Revit\Addins\2024\`.
+
+Después: Revit 2024 → pestaña **EMASY** → grupo **DWG Tools** → **Explotar DWGs** / **Buscador DWG's**.
 
 ## Compilar
 
 ```bash
-./build-zip.sh      # genera dist/EMASY-DWGTools-2024.zip
+./build-zip.sh      # genera dist/EMASY-DWGTools-2024.zip y dist/EMASY-DWGTools-2024-Setup.exe
 python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 ```
 
