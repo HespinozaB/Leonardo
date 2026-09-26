@@ -7,9 +7,9 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.6.0</Version>
-    <AssemblyVersion>1.6.0.0</AssemblyVersion>
-    <FileVersion>1.6.0.0</FileVersion>
+    <Version>1.7.0</Version>
+    <AssemblyVersion>1.7.0.0</AssemblyVersion>
+    <FileVersion>1.7.0.0</FileVersion>
     <Product>EMASY</Product>
     <Company>EMASY</Company>
     <Description>Explota DWGs importados/vinculados en Revit preservando escala, texto y estilos de línea.</Description>
@@ -30,6 +30,7 @@
     <Reference Include="PresentationCore" />
     <Reference Include="WindowsBase" />
     <Reference Include="System.Xaml" />
+    <Reference Include="System.Drawing" />
     <Reference Include="ACadSharp">
       <HintPath>lib\ACadSharp.dll</HintPath>
     </Reference>
@@ -41,6 +42,8 @@
   <ItemGroup>
     <EmbeddedResource Include="resources\icon32.png" LogicalName="RevitDwgExploder.icon32.png" />
     <EmbeddedResource Include="resources\icon16.png" LogicalName="RevitDwgExploder.icon16.png" />
+    <EmbeddedResource Include="resources\finder32.png" LogicalName="RevitDwgExploder.finder32.png" />
+    <EmbeddedResource Include="resources\finder16.png" LogicalName="RevitDwgExploder.finder16.png" />
   </ItemGroup>
 
   <ItemGroup>

@@ -79,6 +79,79 @@ internal sealed class HatchAreaIndex
 		}
 	}
 
+	/// <summary>
+	/// Punto interior "representativo" de una región: dentro de sus contornos, lo más lejos posible del borde
+	/// y, si se puede, fuera de las demás regiones (para no leer el color de un relleno que la tapa).
+	/// </summary>
+	public static XYZ InteriorPoint(List<List<XYZ>> loops, IEnumerable<List<List<XYZ>>> others)
+	{
+		List<XYZ> all = loops.SelectMany(l => l).ToList();
+		if (all.Count < 3)
+		{
+			return null;
+		}
+
+		double minX = all.Min(p => p.X), maxX = all.Max(p => p.X), minY = all.Min(p => p.Y), maxY = all.Max(p => p.Y);
+		double z = all.Average(p => p.Z);
+		List<List<List<XYZ>>> otherList = others?.ToList() ?? new List<List<List<XYZ>>>();
+		XYZ best = null, bestCovered = null;
+		double bestScore = -1.0, bestCoveredScore = -1.0;
+		const int steps = 16;
+		for (int i = 1; i < steps; i++)
+		{
+			for (int j = 1; j < steps; j++)
+			{
+				var p = new XYZ(minX + (maxX - minX) * i / steps, minY + (maxY - minY) * j / steps, z);
+				if (!IsInside(loops, p))
+				{
+					continue;
+				}
+
+				double score = double.MaxValue;
+				foreach (List<XYZ> loop in loops)
+				{
+					for (int a = 0, b = loop.Count - 1; a < loop.Count; b = a++)
+					{
+						score = Math.Min(score, SegmentDistance(loop[b], loop[a], p));
+					}
+				}
+
+				bool covered = otherList.Any(o => IsInside(o, p));
+				if (!covered && score > bestScore)
+				{
+					bestScore = score;
+					best = p;
+				}
+				else if (covered && score > bestCoveredScore)
+				{
+					bestCoveredScore = score;
+					bestCovered = p;
+				}
+			}
+		}
+
+		return best ?? bestCovered;
+	}
+
+	/// <summary>Contornos de Revit como polígonos (puntos).</summary>
+	public static List<List<XYZ>> ToPolygons(IEnumerable<CurveLoop> loops)
+	{
+		var result = new List<List<XYZ>>();
+		foreach (CurveLoop loop in loops)
+		{
+			var points = new List<XYZ>();
+			foreach (Curve c in loop)
+			{
+				IList<XYZ> t = c.Tessellate();
+				points.AddRange(t.Take(t.Count - 1));
+			}
+
+			result.Add(points);
+		}
+
+		return result;
+	}
+
 	/// <summary>Regla par-impar sobre todos los contornos (las islas cuentan como huecos).</summary>
 	private static bool IsInside(List<List<XYZ>> loops, XYZ p)
 	{

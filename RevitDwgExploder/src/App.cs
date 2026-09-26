@@ -39,6 +39,20 @@ public class App : IExternalApplication
 			AvailabilityClassName = "RevitDwgExploder.Commands.ExplodeDwgAvailability"
 		};
 		panel.AddItem(buttonData);
+
+		var finderData = new PushButtonData(
+			"DwgFinderCommand",
+			"Buscador" + Environment.NewLine + "DWG's",
+			assemblyPath,
+			"RevitDwgExploder.Commands.DwgFinderCommand")
+		{
+			ToolTip = "Lista todos los archivos DWG/CAD del modelo (vinculados, importados y sin instancias) y permite " +
+				"seleccionarlos, ubicarlos o eliminarlos.",
+			LargeImage = LoadIcon("RevitDwgExploder.finder32.png"),
+			Image = LoadIcon("RevitDwgExploder.finder16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
+		};
+		panel.AddItem(finderData);
 		return Result.Succeeded;
 	}
 

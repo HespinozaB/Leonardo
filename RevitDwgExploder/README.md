@@ -1,7 +1,10 @@
 # EMASY · DWG Tools (Revit 2024)
 
-Addin que convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en
-**Detail Lines** y **TextNotes** nativos de Revit, en la misma posición y escala, sin tocar el DWG original.
+Addin con dos comandos en la pestaña **EMASY** → grupo **DWG Tools**:
+
+- **Explotar DWGs**: convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en
+  Detail Lines, Filled Regions y TextNotes nativos de Revit, en la misma posición y escala, sin tocar el DWG original.
+- **Buscador DWG's**: lista todos los archivos DWG/CAD del modelo y permite seleccionarlos, ubicarlos o eliminarlos.
 
 ## Instalación
 
@@ -9,7 +12,7 @@ Addin que convierte los DWG importados/vinculados de la vista activa (o los sele
    (tienen el mismo identificador y Revit avisaría de un addin duplicado).
 2. Copiar `EMASY.addin` y la carpeta `EMASY-2024/` a `%AppData%\Autodesk\Revit\Addins\2024\`.
 3. Si Windows bloqueó los DLL descargados: clic derecho → Propiedades → *Desbloquear*.
-4. Abrir Revit 2024 → pestaña **EMASY** → grupo **DWG Tools** → **Explotar DWGs**.
+4. Abrir Revit 2024 → pestaña **EMASY** → grupo **DWG Tools** → **Explotar DWGs** / **Buscador DWG's**.
 
 ## Compilar
 
@@ -19,6 +22,24 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 ```
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
+
+## Cambios de la versión 1.7
+
+### Nuevo: Buscador DWG's
+- Ventana (no bloquea Revit) con **todos los CAD del modelo**: instancias vinculadas e importadas, y archivos
+  que quedaron en el proyecto **sin instancias**. Columnas: archivo, tipo, ubicación (vista propia o modelo),
+  nivel, estado del vínculo (cargado / no encontrado / descargado), fijado, Id y ruta.
+- Búsqueda por texto, filtro (todos / vinculados / importados / sin instancias) y orden por columna.
+- **Seleccionar**: selecciona en Revit los CAD marcados.
+- **Ubicar** (o doble clic): abre la vista del CAD si solo está en una vista, lo selecciona y hace zoom.
+- **Eliminar…**: elimina las instancias marcadas (desfija las fijadas); opcionalmente también el archivo del
+  proyecto (vínculo/importación) si no le quedan instancias. Se puede deshacer con Ctrl+Z.
+
+### Color de los hatch
+- El color de los rellenos sólidos ahora se **lee de lo que Revit muestra**: antes de explotar se exporta una
+  imagen de la zona del CAD y se toma el color en un punto interior de cada relleno, elegido fuera de otros
+  rellenos que lo tapen. Así el color es correcto aunque los rellenos se solapen o Revit los agrupe sin
+  material. Si no se puede leer, se usa como antes el material, el color habitual de la capa, etc.
 
 ## Cambios de la versión 1.6
 

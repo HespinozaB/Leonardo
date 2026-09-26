@@ -64,157 +64,178 @@ public class ExplodeDwgCommand : IExternalCommand
 		// 1) Leer textos (fuera de la transacción principal: exportar requiere documento no modificable).
 		var textsByInstance = new Dictionary<ElementId, (List<DwgTextImporter.DwgTextEntry> Texts, bool IsOcr)>();
 		var exportedHatches = new Dictionary<ElementId, List<HatchRegion>>();
-		var fileCache = new DwgTextImporter.FileCache();
-		using (var roundTrip = new DwgRoundTripTextExtractor(doc, view))
+
+		// Imagen de cada CAD tal como se ve ahora, para leer el color real de los rellenos.
+		var samplers = new Dictionary<ElementId, ViewColorSampler>();
+		foreach (ImportInstance instance in targets)
 		{
-			foreach (ImportInstance instance in targets)
-			{
-				manualPaths.TryGetValue(instance.Id, out string path);
-				DwgTextImporter.ReadStatus status = DwgTextImporter.TryReadTexts(doc, instance, fileCache, out List<DwgTextImporter.DwgTextEntry> texts, path);
-				if (fileCache.ForInstance(instance.Id) == null)
-				{
-					// Sin DWG original: los hatch (con su patrón) se leen de la vista reexportada a DWG.
-					exportedHatches[instance.Id] = roundTrip.ExtractHatches(instance);
-				}
-				switch (status)
-				{
-					case DwgTextImporter.ReadStatus.NotLinked:
-						stats.NotLinked++;
-						break;
-					case DwgTextImporter.ReadStatus.FileNotFound:
-					case DwgTextImporter.ReadStatus.ReadError:
-						stats.Unreadable++;
-						break;
-				}
-
-				// Si los textos leídos del DWG no caen sobre el CAD (unidades o escala de inserción distintas),
-				// se descartan y se usa la reexportación, que ya viene a la escala real del modelo.
-				if (status == DwgTextImporter.ReadStatus.Ok && texts.Count > 0 && FractionInside(texts, instance, view) >= 0.5)
-				{
-					textsByInstance[instance.Id] = (texts, false);
-					continue;
-				}
-
-				List<DwgTextImporter.DwgTextEntry> roundTripTexts = roundTrip.Extract(instance);
-				if (roundTripTexts.Count > 0)
-				{
-					textsByInstance[instance.Id] = (roundTripTexts, false);
-					continue;
-				}
-
-				textsByInstance[instance.Id] = (DwgTextImageOcr.Recognize(doc, view, instance), true);
-			}
+			samplers[instance.Id] = ViewColorSampler.Capture(doc, view, instance);
 		}
 
-		// 2) Crear la geometría y los textos nativos en una sola transacción (un solo "deshacer").
-		var createdTextKeys = new HashSet<string>(StringComparer.Ordinal);
-		using (var tx = new Transaction(doc, "Explotar DWGs a Detail Lines"))
+		try
 		{
-			FailureHandlingOptions failureOptions = tx.GetFailureHandlingOptions();
-			failureOptions.SetFailuresPreprocessor(new WarningSwallower());
-			failureOptions.SetClearAfterRollback(true);
-			tx.SetFailureHandlingOptions(failureOptions);
-			tx.Start();
-
-			// Textos del DWG más pequeños que lo que Revit permite a la escala de la vista: se ofrece
-			// ajustar la escala de la vista para que conserven su tamaño relativo al dibujo.
-			double minTextSize = MinTextSizeFeet;
-			AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats);
-			var textTypeCache = new TextNoteTypeCache(doc, view.Scale, minTextSize);
-
-			var lineStyles = new LineStyleMapper(doc);
-			var regions = new FilledRegionBuilder(doc, view, commandData.Application.Application.ShortCurveTolerance);
-			var layers = new LayerLookup(doc);
-			var geometryOptions = new Options
+			var fileCache = new DwgTextImporter.FileCache();
+			using (var roundTrip = new DwgRoundTripTextExtractor(doc, view))
 			{
-				View = view,
-				ComputeReferences = false,
-				IncludeNonVisibleObjects = false
-			};
-
-			foreach (ImportInstance instance in targets)
-			{
-				DwgTextImporter.FileCache.Entry source = fileCache.ForInstance(instance.Id);
-
-				// a) Hatch del DWG → Filled Regions (se crean primero para que queden debajo de líneas y textos).
-				var hatchAreas = new HatchAreaIndex(Math.Max(minLength * 2.0, 0.003));
-				List<HatchRegion> hatches = source != null
-					? DwgHatchReader.Read(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform())
-					: exportedHatches.TryGetValue(instance.Id, out var exported) ? exported : new List<HatchRegion>();
+				foreach (ImportInstance instance in targets)
 				{
-					foreach (HatchRegion hatch in hatches)
+					manualPaths.TryGetValue(instance.Id, out string path);
+					DwgTextImporter.ReadStatus status = DwgTextImporter.TryReadTexts(doc, instance, fileCache, out List<DwgTextImporter.DwgTextEntry> texts, path);
+					if (fileCache.ForInstance(instance.Id) == null)
 					{
-						if (regions.Create(hatch))
-						{
-							hatchAreas.Add(hatch);
-						}
+						// Sin DWG original: los hatch (con su patrón) se leen de la vista reexportada a DWG.
+						exportedHatches[instance.Id] = roundTrip.ExtractHatches(instance);
 					}
-				}
-
-				// b) Geometría del CAD → Detail Lines (sin las líneas/rellenos de los hatch ya convertidos).
-				var curves = new List<(Curve Curve, ElementId StyleId)>();
-				var fills = new List<(GeometryObject Fill, ElementId StyleId)>();
-				GeometryElement geometry = instance.get_Geometry(geometryOptions);
-				if (geometry != null)
-				{
-					var seen = new HashSet<(long, long, long, long, long, long, long)>();
-					CollectCurves(geometry, curves, fills, seen, minLength, ref stats.Skipped);
-					ConvertFills(fills, hatchAreas, regions, layers, curves, seen, minLength, stats);
-					if (!hatchAreas.IsEmpty)
+					switch (status)
 					{
-						int before = curves.Count;
-						curves.RemoveAll(c => hatchAreas.IsPatternLine(layers.NameOf(c.StyleId), c.Curve));
-						stats.HatchLinesReplaced += before - curves.Count;
+						case DwgTextImporter.ReadStatus.NotLinked:
+							stats.NotLinked++;
+							break;
+						case DwgTextImporter.ReadStatus.FileNotFound:
+						case DwgTextImporter.ReadStatus.ReadError:
+							stats.Unreadable++;
+							break;
 					}
-				}
 
-				DwgLinetypeIndex linetypes = null;
-				if (source != null)
-				{
-					linetypes = DwgLinetypeIndex.Build(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform(), view.Scale);
-				}
-
-				CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
-
-				// c) Textos (al final, por encima de todo).
-				var (texts, isOcr) = textsByInstance[instance.Id];
-				foreach (DwgTextImporter.DwgTextEntry entry in texts)
-				{
-					if (!createdTextKeys.Add(TextKey(entry)))
+					// Si los textos leídos del DWG no caen sobre el CAD (unidades o escala de inserción distintas),
+					// se descartan y se usa la reexportación, que ya viene a la escala real del modelo.
+					if (status == DwgTextImporter.ReadStatus.Ok && texts.Count > 0 && FractionInside(texts, instance, view) >= 0.5)
 					{
+						textsByInstance[instance.Id] = (texts, false);
 						continue;
 					}
 
-					if (textTypeCache.IsBelowMinimum(entry.HeightFeet))
+					List<DwgTextImporter.DwgTextEntry> roundTripTexts = roundTrip.Extract(instance);
+					if (roundTripTexts.Count > 0)
 					{
-						stats.ClampedTexts++;
+						textsByInstance[instance.Id] = (roundTripTexts, false);
+						continue;
 					}
 
-					if (CreateTextNote(doc, view, entry, textTypeCache))
-					{
-						if (isOcr)
-						{
-							stats.OcrTexts++;
-						}
-						else
-						{
-							stats.ExactTexts++;
-						}
-					}
+					textsByInstance[instance.Id] = (DwgTextImageOcr.Recognize(doc, view, instance), true);
 				}
-
-				stats.Processed++;
 			}
 
-			stats.CreatedStyles = lineStyles.CreatedStyles;
-			stats.CreatedPatterns = lineStyles.CreatedPatterns;
-			stats.FilledRegions = regions.Created;
-			stats.FillPatterns = regions.CreatedPatterns;
-			stats.FailedRegions = regions.Failed;
-			if (tx.Commit() != TransactionStatus.Committed)
+			// 2) Crear la geometría y los textos nativos en una sola transacción (un solo "deshacer").
+			var createdTextKeys = new HashSet<string>(StringComparer.Ordinal);
+			using (var tx = new Transaction(doc, "Explotar DWGs a Detail Lines"))
 			{
-				message = "No se pudo confirmar la transacción.";
-				return Result.Failed;
+				FailureHandlingOptions failureOptions = tx.GetFailureHandlingOptions();
+				failureOptions.SetFailuresPreprocessor(new WarningSwallower());
+				failureOptions.SetClearAfterRollback(true);
+				tx.SetFailureHandlingOptions(failureOptions);
+				tx.Start();
+
+				// Textos del DWG más pequeños que lo que Revit permite a la escala de la vista: se ofrece
+				// ajustar la escala de la vista para que conserven su tamaño relativo al dibujo.
+				double minTextSize = MinTextSizeFeet;
+				AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats);
+				var textTypeCache = new TextNoteTypeCache(doc, view.Scale, minTextSize);
+
+				var lineStyles = new LineStyleMapper(doc);
+				var regions = new FilledRegionBuilder(doc, view, commandData.Application.Application.ShortCurveTolerance);
+				var layers = new LayerLookup(doc);
+				var geometryOptions = new Options
+				{
+					View = view,
+					ComputeReferences = false,
+					IncludeNonVisibleObjects = false
+				};
+
+				foreach (ImportInstance instance in targets)
+				{
+					DwgTextImporter.FileCache.Entry source = fileCache.ForInstance(instance.Id);
+					samplers.TryGetValue(instance.Id, out ViewColorSampler sampler);
+
+					// a) Hatch del DWG → Filled Regions (se crean primero para que queden debajo de líneas y textos).
+					var hatchAreas = new HatchAreaIndex(Math.Max(minLength * 2.0, 0.003));
+					List<HatchRegion> hatches = source != null
+						? DwgHatchReader.Read(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform())
+						: exportedHatches.TryGetValue(instance.Id, out var exported) ? exported : new List<HatchRegion>();
+					{
+						ApplySampledColors(hatches, sampler);
+						foreach (HatchRegion hatch in hatches)
+						{
+							if (regions.Create(hatch))
+							{
+								hatchAreas.Add(hatch);
+							}
+						}
+					}
+
+					// b) Geometría del CAD → Detail Lines (sin las líneas/rellenos de los hatch ya convertidos).
+					var curves = new List<(Curve Curve, ElementId StyleId)>();
+					var fills = new List<(GeometryObject Fill, ElementId StyleId)>();
+					GeometryElement geometry = instance.get_Geometry(geometryOptions);
+					if (geometry != null)
+					{
+						var seen = new HashSet<(long, long, long, long, long, long, long)>();
+						CollectCurves(geometry, curves, fills, seen, minLength, ref stats.Skipped);
+						ConvertFills(fills, hatchAreas, regions, layers, curves, seen, minLength, stats, sampler);
+						if (!hatchAreas.IsEmpty)
+						{
+							int before = curves.Count;
+							curves.RemoveAll(c => hatchAreas.IsPatternLine(layers.NameOf(c.StyleId), c.Curve));
+							stats.HatchLinesReplaced += before - curves.Count;
+						}
+					}
+
+					DwgLinetypeIndex linetypes = null;
+					if (source != null)
+					{
+						linetypes = DwgLinetypeIndex.Build(source.Cad, fileCache.FeetPerUnitFor(instance.Id), instance.GetTransform(), view.Scale);
+					}
+
+					CreateDetailCurves(doc, view, curves, lineStyles, linetypes, stats);
+
+					// c) Textos (al final, por encima de todo).
+					var (texts, isOcr) = textsByInstance[instance.Id];
+					foreach (DwgTextImporter.DwgTextEntry entry in texts)
+					{
+						if (!createdTextKeys.Add(TextKey(entry)))
+						{
+							continue;
+						}
+
+						if (textTypeCache.IsBelowMinimum(entry.HeightFeet))
+						{
+							stats.ClampedTexts++;
+						}
+
+						if (CreateTextNote(doc, view, entry, textTypeCache))
+						{
+							if (isOcr)
+							{
+								stats.OcrTexts++;
+							}
+							else
+							{
+								stats.ExactTexts++;
+							}
+						}
+					}
+
+					stats.Processed++;
+				}
+
+				stats.CreatedStyles = lineStyles.CreatedStyles;
+				stats.CreatedPatterns = lineStyles.CreatedPatterns;
+				stats.FilledRegions = regions.Created;
+				stats.FillPatterns = regions.CreatedPatterns;
+				stats.FailedRegions = regions.Failed;
+				if (tx.Commit() != TransactionStatus.Committed)
+				{
+					message = "No se pudo confirmar la transacción.";
+					return Result.Failed;
+				}
+			}
+
+		}
+		finally
+		{
+			foreach (ViewColorSampler sampler in samplers.Values)
+			{
+				sampler?.Dispose();
 			}
 		}
 
@@ -845,7 +866,8 @@ public class ExplodeDwgCommand : IExternalCommand
 	/// - si Revit no acepta la región, se dibuja solo su contorno.
 	/// </summary>
 	private static void ConvertFills(List<(GeometryObject Fill, ElementId StyleId)> fills, HatchAreaIndex hatchAreas, FilledRegionBuilder regions,
-		LayerLookup layers, List<(Curve, ElementId)> curves, HashSet<(long, long, long, long, long, long, long)> seen, double minLength, Stats stats)
+		LayerLookup layers, List<(Curve, ElementId)> curves, HashSet<(long, long, long, long, long, long, long)> seen, double minLength, Stats stats,
+		ViewColorSampler sampler)
 	{
 		// 1) Piezas de relleno (cada malla se separa en sus partes conectadas; cada cara de lámina es una pieza).
 		var pieces = new List<(List<CurveLoop> Loops, XYZ Sample, Color Material, ElementId StyleId)>();
@@ -886,8 +908,14 @@ public class ExplodeDwgCommand : IExternalCommand
 			.OrderByDescending(c => c.Count())
 			.FirstOrDefault()?.First().Material;
 
-		foreach (var (loops, sample, material, styleId) in pieces)
+		List<(List<List<XYZ>> Polygons, (double, double, double, double) Box)> shapes = pieces
+			.Select(p => HatchAreaIndex.ToPolygons(p.Loops))
+			.Select(poly => (poly, Box(poly)))
+			.ToList();
+
+		for (int index = 0; index < pieces.Count; index++)
 		{
+			var (loops, sample, material, styleId) = pieces[index];
 			if (loops.Count == 0 || (sample != null && hatchAreas.Contains(sample)))
 			{
 				continue;
@@ -900,7 +928,20 @@ public class ExplodeDwgCommand : IExternalCommand
 				continue;
 			}
 
-			Color color = material
+			// El color que Revit muestra (leído de la imagen) manda; si no se pudo leer, el material, el color
+			// habitual de la capa, etc.
+			Color shown = null;
+			if (sampler != null)
+			{
+				var box = shapes[index].Box;
+				IEnumerable<List<List<XYZ>>> others = shapes
+					.Where((o, k) => k != index && Overlaps(o.Box, box))
+					.Select(o => o.Polygons);
+				shown = sampler.Sample(HatchAreaIndex.InteriorPoint(shapes[index].Polygons, others));
+			}
+
+			Color color = shown
+				?? material
 				?? (colorByStyle.TryGetValue(styleId, out Color styleColor) ? styleColor : null)
 				?? layers.ColorOf(styleId)
 				?? commonColor;
@@ -915,6 +956,50 @@ public class ExplodeDwgCommand : IExternalCommand
 			}
 		}
 	}
+
+	/// <summary>
+	/// Corrige el color de los hatch sólidos con el color que Revit muestra realmente en su interior
+	/// (punto elegido fuera de otros hatch que lo tapen).
+	/// </summary>
+	private static void ApplySampledColors(List<HatchRegion> hatches, ViewColorSampler sampler)
+	{
+		if (sampler == null || hatches.Count == 0)
+		{
+			return;
+		}
+
+		var boxes = hatches.Select(h => Box(h.Loops)).ToList();
+		for (int i = 0; i < hatches.Count; i++)
+		{
+			if (!hatches[i].IsSolid)
+			{
+				continue;
+			}
+
+			var box = boxes[i];
+			IEnumerable<List<List<XYZ>>> others = hatches
+				.Where((h, k) => k != i && Overlaps(boxes[k], box))
+				.Select(h => h.Loops);
+			Color color = sampler.Sample(HatchAreaIndex.InteriorPoint(hatches[i].Loops, others));
+			if (color != null)
+			{
+				hatches[i].R = color.Red;
+				hatches[i].G = color.Green;
+				hatches[i].B = color.Blue;
+			}
+		}
+	}
+
+	private static (double MinX, double MinY, double MaxX, double MaxY) Box(List<List<XYZ>> polygons)
+	{
+		List<XYZ> all = polygons.SelectMany(p => p).ToList();
+		return all.Count == 0
+			? (0, 0, 0, 0)
+			: (all.Min(p => p.X), all.Min(p => p.Y), all.Max(p => p.X), all.Max(p => p.Y));
+	}
+
+	private static bool Overlaps((double MinX, double MinY, double MaxX, double MaxY) a, (double MinX, double MinY, double MaxX, double MaxY) b) =>
+		a.MinX <= b.MaxX && b.MinX <= a.MaxX && a.MinY <= b.MaxY && b.MinY <= a.MaxY;
 
 	private static bool HasLinesInside(List<CurveLoop> loops, ElementId styleId, List<(Curve, ElementId)> curves)
 	{
