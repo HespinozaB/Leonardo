@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Compila en Release y empaqueta el addin con la misma estructura que el original:
-#   RevitDwgExploder.addin + RevitDwgExploder-2024/
+#   EMASY.addin + EMASY-2024/
 set -euo pipefail
 cd "$(dirname "$0")"
+rm -rf dist bin/Release
 dotnet build -c Release
-rm -rf dist && mkdir -p dist/pkg
-cp RevitDwgExploder.addin dist/pkg/
-cp -r bin/Release/RevitDwgExploder-2024 dist/pkg/
-rm -f dist/pkg/RevitDwgExploder-2024/*.pdb
-(cd dist/pkg && zip -qr ../RevitDwgExploder-2024.zip .)
-echo "Generado: dist/RevitDwgExploder-2024.zip"
+mkdir -p dist/pkg
+cp EMASY.addin dist/pkg/
+cp -r bin/Release/EMASY-2024 dist/pkg/
+rm -f dist/pkg/EMASY-2024/*.pdb
+(cd dist/pkg && zip -qr ../EMASY-DWGTools-2024.zip .)
+echo "Generado: dist/EMASY-DWGTools-2024.zip"

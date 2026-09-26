@@ -1,14 +1,17 @@
 using System;
+using System.IO;
 using System.Reflection;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Autodesk.Revit.UI;
 
 namespace RevitDwgExploder;
 
 public class App : IExternalApplication
 {
-	private const string TabName = "DWG Tools";
+	private const string TabName = "EMASY";
 
-	private const string PanelName = "Explotar";
+	private const string PanelName = "DWG Tools";
 
 	public Result OnStartup(UIControlledApplication application)
 	{
@@ -18,7 +21,7 @@ public class App : IExternalApplication
 		}
 		catch (Autodesk.Revit.Exceptions.ArgumentException)
 		{
-			// La pestaña ya existe (otro addin la creó).
+			// La pestaña ya existe (otro addin de EMASY la creó).
 		}
 
 		RibbonPanel panel = application.CreateRibbonPanel(TabName, PanelName);
@@ -29,8 +32,10 @@ public class App : IExternalApplication
 			assemblyPath,
 			"RevitDwgExploder.Commands.ExplodeDwgCommand")
 		{
-			ToolTip = "Convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en Detail Lines " +
-				"y TextNotes nativos (misma posición, escala y capa → Line Style), sin modificar el DWG original.",
+			ToolTip = "Convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en Detail Lines, " +
+				"Filled Regions y TextNotes nativos (misma posición, escala, capas, tipos de línea y hatch), sin modificar el DWG original.",
+			LargeImage = LoadIcon("RevitDwgExploder.icon32.png"),
+			Image = LoadIcon("RevitDwgExploder.icon16.png"),
 			AvailabilityClassName = "RevitDwgExploder.Commands.ExplodeDwgAvailability"
 		};
 		panel.AddItem(buttonData);
@@ -41,5 +46,30 @@ public class App : IExternalApplication
 	{
 		Commands.DwgTextImageOcr.DisposeEngine();
 		return Result.Succeeded;
+	}
+
+	/// <summary>Carga un PNG incrustado en la DLL como imagen del botón (null si falla: el botón queda sin icono).</summary>
+	private static ImageSource LoadIcon(string resourceName)
+	{
+		try
+		{
+			using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
+			if (stream == null)
+			{
+				return null;
+			}
+
+			var image = new BitmapImage();
+			image.BeginInit();
+			image.CacheOption = BitmapCacheOption.OnLoad;
+			image.StreamSource = stream;
+			image.EndInit();
+			image.Freeze();
+			return image;
+		}
+		catch (Exception)
+		{
+			return null;
+		}
 	}
 }

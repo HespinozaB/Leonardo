@@ -7,12 +7,13 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.5.0</Version>
-    <AssemblyVersion>1.5.0.0</AssemblyVersion>
-    <FileVersion>1.5.0.0</FileVersion>
-    <Product>RevitDwgExploder</Product>
+    <Version>1.6.0</Version>
+    <AssemblyVersion>1.6.0.0</AssemblyVersion>
+    <FileVersion>1.6.0.0</FileVersion>
+    <Product>EMASY</Product>
+    <Company>EMASY</Company>
     <Description>Explota DWGs importados/vinculados en Revit preservando escala, texto y estilos de línea.</Description>
-    <OutputPath>bin\$(Configuration)\RevitDwgExploder-2024\</OutputPath>
+    <OutputPath>bin\$(Configuration)\EMASY-2024\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
@@ -26,12 +27,20 @@
 
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
     <Reference Include="ACadSharp">
       <HintPath>lib\ACadSharp.dll</HintPath>
     </Reference>
     <Reference Include="Tesseract">
       <HintPath>lib\Tesseract.dll</HintPath>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="resources\icon32.png" LogicalName="RevitDwgExploder.icon32.png" />
+    <EmbeddedResource Include="resources\icon16.png" LogicalName="RevitDwgExploder.icon16.png" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,22 +1,35 @@
-# RevitDwgExploder (Revit 2024)
+# EMASY · DWG Tools (Revit 2024)
 
 Addin que convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en
 **Detail Lines** y **TextNotes** nativos de Revit, en la misma posición y escala, sin tocar el DWG original.
 
 ## Instalación
 
-1. Copiar `RevitDwgExploder.addin` y la carpeta `RevitDwgExploder-2024/` a
-   `%AppData%\Autodesk\Revit\Addins\2024\`.
-2. Si Windows bloqueó los DLL descargados: clic derecho → Propiedades → *Desbloquear*.
-3. Abrir Revit 2024 → pestaña **DWG Tools** → **Explotar DWGs**.
+1. Borrar la versión anterior si existe: `RevitDwgExploder.addin` y la carpeta `RevitDwgExploder-2024/`
+   (tienen el mismo identificador y Revit avisaría de un addin duplicado).
+2. Copiar `EMASY.addin` y la carpeta `EMASY-2024/` a `%AppData%\Autodesk\Revit\Addins\2024\`.
+3. Si Windows bloqueó los DLL descargados: clic derecho → Propiedades → *Desbloquear*.
+4. Abrir Revit 2024 → pestaña **EMASY** → grupo **DWG Tools** → **Explotar DWGs**.
 
 ## Compilar
 
 ```bash
-./build-zip.sh      # genera dist/RevitDwgExploder-2024.zip
+./build-zip.sh      # genera dist/EMASY-DWGTools-2024.zip
+python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 ```
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
+
+## Cambios de la versión 1.6
+
+- **Rellenos que salían negros al solaparse**: Revit junta en una sola malla varios rellenos que se solapan y
+  esa malla no trae color; ahora la malla se separa en sus piezas conectadas (cada relleno con su propio
+  contorno) y, si una pieza no trae color, toma el color de los demás rellenos de su misma capa en vez del
+  color de la capa (que suele ser negro/blanco).
+- Addin renombrado a **EMASY**: pestaña **EMASY**, grupo **DWG Tools**, manifiesto `EMASY.addin` y carpeta
+  `EMASY-2024/`.
+- **Icono** del botón (32 px y 16 px): círculo gris con una hoja de plano "explotada" en trazo blanco, en el
+  estilo del logo. Se generan con `tools/make_icons.py` y van incrustados en la DLL.
 
 ## Cambios de la versión 1.5
 

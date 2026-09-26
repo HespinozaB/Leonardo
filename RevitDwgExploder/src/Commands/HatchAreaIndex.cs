@@ -126,15 +126,68 @@ internal sealed class HatchAreaIndex
 		return Math.Sqrt(ex * ex + ey * ey);
 	}
 
-	/// <summary>Contornos exteriores de una malla (aristas que pertenecen a un solo triángulo), encadenados.</summary>
-	public static List<CurveLoop> MeshOutline(Mesh mesh, double shortCurve)
+	/// <summary>
+	/// Divide una malla en piezas conectadas (triángulos que comparten vértices). Revit a veces junta en una
+	/// sola malla varios rellenos que se solapan; tratarlos por separado evita contornos mezclados.
+	/// Devuelve el contorno y un punto interior de cada pieza.
+	/// </summary>
+	public static List<(List<CurveLoop> Loops, XYZ Sample)> MeshPieces(Mesh mesh, double shortCurve)
 	{
-		var edges = new Dictionary<(long, long, long, long), (XYZ A, XYZ B, int Count)>();
-		(long, long) Key(XYZ p) => ((long)Math.Round(p.X * 1E5), (long)Math.Round(p.Y * 1E5));
+		int n = mesh.NumTriangles;
+		var parent = Enumerable.Range(0, n).ToArray();
+		int Find(int x)
+		{
+			while (parent[x] != x)
+			{
+				parent[x] = parent[parent[x]];
+				x = parent[x];
+			}
 
-		for (int i = 0; i < mesh.NumTriangles; i++)
+			return x;
+		}
+
+		var firstByVertex = new Dictionary<(long, long), int>();
+		var triangles = new List<MeshTriangle>(n);
+		for (int i = 0; i < n; i++)
 		{
 			MeshTriangle tri = mesh.get_Triangle(i);
+			triangles.Add(tri);
+			for (int k = 0; k < 3; k++)
+			{
+				var key = VertexKey(tri.get_Vertex(k));
+				if (firstByVertex.TryGetValue(key, out int other))
+				{
+					parent[Find(i)] = Find(other);
+				}
+				else
+				{
+					firstByVertex[key] = i;
+				}
+			}
+		}
+
+		var result = new List<(List<CurveLoop>, XYZ)>();
+		foreach (var group in Enumerable.Range(0, n).GroupBy(Find))
+		{
+			List<MeshTriangle> tris = group.Select(i => triangles[i]).ToList();
+			MeshTriangle first = tris[0];
+			XYZ sample = (first.get_Vertex(0) + first.get_Vertex(1) + first.get_Vertex(2)) / 3.0;
+			result.Add((Outline(tris, shortCurve), sample));
+		}
+
+		return result;
+	}
+
+	private static (long, long) VertexKey(XYZ p) => ((long)Math.Round(p.X * 1E5), (long)Math.Round(p.Y * 1E5));
+
+	/// <summary>Contornos exteriores de un conjunto de triángulos (aristas que pertenecen a un solo triángulo), encadenados.</summary>
+	private static List<CurveLoop> Outline(List<MeshTriangle> triangles, double shortCurve)
+	{
+		var edges = new Dictionary<(long, long, long, long), (XYZ A, XYZ B, int Count)>();
+		(long, long) Key(XYZ p) => VertexKey(p);
+
+		foreach (MeshTriangle tri in triangles)
+		{
 			for (int k = 0; k < 3; k++)
 			{
 				XYZ a = tri.get_Vertex(k);

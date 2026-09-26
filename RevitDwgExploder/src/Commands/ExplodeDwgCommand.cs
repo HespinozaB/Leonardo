@@ -847,14 +847,17 @@ public class ExplodeDwgCommand : IExternalCommand
 	private static void ConvertFills(List<(GeometryObject Fill, ElementId StyleId)> fills, HatchAreaIndex hatchAreas, FilledRegionBuilder regions,
 		LayerLookup layers, List<(Curve, ElementId)> curves, HashSet<(long, long, long, long, long, long, long)> seen, double minLength, Stats stats)
 	{
+		// 1) Piezas de relleno (cada malla se separa en sus partes conectadas; cada cara de lámina es una pieza).
+		var pieces = new List<(List<CurveLoop> Loops, XYZ Sample, Color Material, ElementId StyleId)>();
 		foreach (var (fill, styleId) in fills)
 		{
-			var pieces = new List<(List<CurveLoop> Loops, XYZ Sample, ElementId Material)>();
 			if (fill is Mesh mesh && mesh.NumTriangles > 0)
 			{
-				MeshTriangle first = mesh.get_Triangle(0);
-				XYZ centroid = (first.get_Vertex(0) + first.get_Vertex(1) + first.get_Vertex(2)) / 3.0;
-				pieces.Add((HatchAreaIndex.MeshOutline(mesh, minLength), centroid, mesh.MaterialElementId));
+				Color material = layers.MaterialColor(mesh.MaterialElementId);
+				foreach (var (loops, sample) in HatchAreaIndex.MeshPieces(mesh, minLength))
+				{
+					pieces.Add((loops, sample, material, styleId));
+				}
 			}
 			else if (fill is Solid solid)
 			{
@@ -863,35 +866,52 @@ public class ExplodeDwgCommand : IExternalCommand
 					IList<CurveLoop> faceLoops = face.GetEdgesAsCurveLoops();
 					if (faceLoops.Count > 0)
 					{
-						pieces.Add((faceLoops.ToList(), SamplePoint(face), face.MaterialElementId));
+						pieces.Add((faceLoops.ToList(), SamplePoint(face), layers.MaterialColor(face.MaterialElementId), styleId));
 					}
 				}
 			}
+		}
 
-			foreach (var (loops, sample, material) in pieces)
+		// 2) Color más frecuente de los rellenos de cada capa que sí traen color (material): se usa para las
+		//    piezas sin material (p.ej. rellenos solapados que Revit junta en una malla), en vez de caer en el
+		//    color de la capa, que suele ser negro/blanco.
+		var colorByStyle = pieces
+			.Where(p => p.Material != null)
+			.GroupBy(p => p.StyleId)
+			.ToDictionary(g => g.Key, g => g.GroupBy(p => (p.Material.Red, p.Material.Green, p.Material.Blue))
+				.OrderByDescending(c => c.Count()).First().First().Material);
+		Color commonColor = pieces
+			.Where(p => p.Material != null)
+			.GroupBy(p => (p.Material.Red, p.Material.Green, p.Material.Blue))
+			.OrderByDescending(c => c.Count())
+			.FirstOrDefault()?.First().Material;
+
+		foreach (var (loops, sample, material, styleId) in pieces)
+		{
+			if (loops.Count == 0 || (sample != null && hatchAreas.Contains(sample)))
 			{
-				if (loops.Count == 0 || (sample != null && hatchAreas.Contains(sample)))
-				{
-					continue;
-				}
+				continue;
+			}
 
-				// Si hay líneas de la misma capa dentro de la lámina, es un hatch con patrón que Revit ya
-				// dibuja con líneas: no se rellena en sólido (se conservan esas líneas).
-				if (HasLinesInside(loops, styleId, curves))
-				{
-					continue;
-				}
+			// Si hay líneas de la misma capa dentro de la lámina, es un hatch con patrón que Revit ya
+			// dibuja con líneas: no se rellena en sólido (se conservan esas líneas).
+			if (HasLinesInside(loops, styleId, curves))
+			{
+				continue;
+			}
 
-				Color color = layers.MaterialColor(material) ?? layers.ColorOf(styleId);
-				if (regions.CreateSolid(loops, color))
-				{
-					continue;
-				}
+			Color color = material
+				?? (colorByStyle.TryGetValue(styleId, out Color styleColor) ? styleColor : null)
+				?? layers.ColorOf(styleId)
+				?? commonColor;
+			if (regions.CreateSolid(loops, color))
+			{
+				continue;
+			}
 
-				foreach (Curve c in loops.SelectMany(l => l))
-				{
-					AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
-				}
+			foreach (Curve c in loops.SelectMany(l => l))
+			{
+				AddCurve(c, styleId, curves, seen, minLength, ref stats.Skipped);
 			}
 		}
 	}
