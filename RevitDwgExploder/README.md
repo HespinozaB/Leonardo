@@ -35,6 +35,23 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.11
+
+### Nombres de los comandos
+- **Explotar DWGs** → **Explotar en Vista Actual**.
+- **Buscador DWG's** → **Explotar Varios DWG's**.
+
+### Explotar Varios DWG's
+- Nuevo botón **Explotar…**: explota en lote los DWG seleccionados en la lista. Cada DWG se explota en su
+  vista (la propia si es "solo en su vista"; si es de modelo, la vista activa si lo muestra o una planta de su
+  nivel), con una transacción por vista y un único resumen al final. Opciones: ajustar la escala de la vista
+  si los textos son demasiado pequeños (por defecto sí) y eliminar los DWG originales después de explotarlos.
+  Las imágenes de colores y OCR se exportan de la vista indicada, sin tener que abrirla.
+- Columnas **Nivel, Estado, Fijado e Id ocultas** por defecto; se muestran con la casilla **Más datos**.
+- **Eliminar** quita también el archivo DWG del proyecto cuando no le quedan instancias, para que no quede
+  en la lista como "(sin instancias)".
+- **Actualizar** vuelve a leer la lista y redibuja la vista activa.
+
 ## Cambios de la versión 1.10
 
 ### Buscador DWG's más rápido

@@ -121,9 +121,10 @@ internal static class DwgTextImageOcr
 						PixelSize = ExportPixelSize,
 						ImageResolution = ImageResolution.DPI_300,
 						FitDirection = FitDirectionType.Horizontal,
-						ExportRange = ExportRange.CurrentView,
+						ExportRange = ExportRange.SetOfViews,
 						HLRandWFViewsFileType = ImageFileType.PNG
 					};
+					options.SetViewsAndSheets(new List<ElementId> { view.Id });
 					doc.ExportImage(options);
 				}
 				finally

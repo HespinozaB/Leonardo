@@ -12,8 +12,8 @@ using RevitDwgExploder.Commands;
 namespace RevitDwgExploder.UI;
 
 /// <summary>
-/// Ventana no modal "Buscador DWG's": lista todos los CAD del modelo y permite seleccionarlos, ubicarlos o
-/// eliminarlos. Las acciones se envían a Revit mediante un ExternalEvent.
+/// Ventana no modal "Explotar Varios DWG's": lista todos los CAD del modelo y permite explotarlos en lote,
+/// seleccionarlos, ubicarlos o eliminarlos. Las acciones se envían a Revit mediante un ExternalEvent.
 /// </summary>
 internal sealed class DwgFinderForm : Form
 {
@@ -29,7 +29,16 @@ internal sealed class DwgFinderForm : Form
 
 	private readonly Label _status = new Label();
 
+	private readonly Button _explode = new Button();
+
 	private readonly Button _select = new Button();
+
+	private readonly CheckBox _moreData = new CheckBox();
+
+	/// <summary>Columnas de detalle (Nivel, Estado, Fijado, Id), ocultas salvo que se marque "Más datos".</summary>
+	private static readonly int[] DetailColumns = { 4, 5, 6, 7 };
+
+	private static readonly int[] DetailWidths = { 90, 90, 55, 80 };
 
 	private readonly Button _locate = new Button();
 
@@ -71,7 +80,7 @@ internal sealed class DwgFinderForm : Form
 
 	private void BuildLayout()
 	{
-		Text = "EMASY · Buscador DWG's";
+		Text = "EMASY · Explotar Varios DWG's";
 		StartPosition = FormStartPosition.CenterScreen;
 		Size = new Size(1150, 560);
 		MinimumSize = new Size(700, 360);
@@ -90,6 +99,11 @@ internal sealed class DwgFinderForm : Form
 		_kindFilter.SelectedIndex = 0;
 		_kindFilter.SelectedIndexChanged += (s, e) => Populate();
 		top.Controls.Add(_kindFilter);
+		_moreData.Text = "Más datos (nivel, estado, fijado, Id)";
+		_moreData.AutoSize = true;
+		_moreData.Margin = new Padding(16, 5, 0, 0);
+		_moreData.CheckedChanged += (s, e) => ShowDetailColumns(_moreData.Checked);
+		top.Controls.Add(_moreData);
 
 		_list.Dock = DockStyle.Fill;
 		_list.View = System.Windows.Forms.View.Details;
@@ -106,6 +120,16 @@ internal sealed class DwgFinderForm : Form
 		_list.Columns.Add("Fijado", 55);
 		_list.Columns.Add("Id", 70);
 		_list.Columns.Add("Ruta", 300);
+		ShowDetailColumns(false);
+		_list.ColumnWidthChanging += (s, e) =>
+		{
+			// Las columnas ocultas no se pueden abrir arrastrando: se usan con "Más datos".
+			if (!_moreData.Checked && DetailColumns.Contains(e.ColumnIndex))
+			{
+				e.Cancel = true;
+				e.NewWidth = 0;
+			}
+		};
 		_list.ColumnClick += (s, e) =>
 		{
 			_sortAscending = _sortColumn != e.Column || !_sortAscending;
@@ -117,13 +141,15 @@ internal sealed class DwgFinderForm : Form
 
 		var bottom = new Panel { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(8) };
 		var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
+		SetupButton(_explode, "Explotar…", ConfirmExplode);
+		_explode.Font = new Font(Font, FontStyle.Bold);
 		SetupButton(_select, "Seleccionar", () => Run(DwgFinderAction.Select));
 		SetupButton(_locate, "Ubicar", () => Run(DwgFinderAction.Locate));
 		SetupButton(_delete, "Eliminar…", ConfirmDelete);
 		SetupButton(_refresh, "Actualizar", () => Run(DwgFinderAction.Refresh));
 		var close = new Button { Text = "Cerrar", Width = 90, Height = 28 };
 		close.Click += (s, e) => Close();
-		buttons.Controls.AddRange(new Control[] { _select, _locate, _delete, _refresh, close });
+		buttons.Controls.AddRange(new Control[] { _explode, _select, _locate, _delete, _refresh, close });
 		_status.Dock = DockStyle.Fill;
 		_status.TextAlign = ContentAlignment.MiddleLeft;
 		bottom.Controls.Add(_status);
@@ -134,6 +160,36 @@ internal sealed class DwgFinderForm : Form
 		Controls.Add(bottom);
 		CancelButton = close;
 		UpdateButtons();
+	}
+
+	private void ShowDetailColumns(bool show)
+	{
+		for (int i = 0; i < DetailColumns.Length; i++)
+		{
+			_list.Columns[DetailColumns[i]].Width = show ? DetailWidths[i] : 0;
+		}
+	}
+
+	private void ConfirmExplode()
+	{
+		List<DwgFinderEntry> selected = SelectedEntries().Where(e => e.IsInstance).ToList();
+		if (selected.Count == 0)
+		{
+			return;
+		}
+
+		using (var dialog = new ExplodeOptionsDialog(selected.Count))
+		{
+			if (dialog.ShowDialog(this) != DialogResult.OK)
+			{
+				return;
+			}
+
+			_handler.AdjustScale = dialog.AdjustScale;
+			_handler.DeleteOriginals = dialog.DeleteOriginals;
+		}
+
+		Run(DwgFinderAction.Explode);
 	}
 
 	private static void SetupButton(Button button, string text, Action action)
@@ -225,6 +281,7 @@ internal sealed class DwgFinderForm : Form
 	{
 		List<DwgFinderEntry> selected = SelectedEntries();
 		bool anyInstance = selected.Any(e => e.IsInstance);
+		_explode.Enabled = anyInstance;
 		_select.Enabled = anyInstance;
 		_locate.Enabled = anyInstance;
 		_delete.Enabled = selected.Count > 0;
@@ -239,18 +296,16 @@ internal sealed class DwgFinderForm : Form
 		}
 
 		int pinned = selected.Count(e => e.Pinned);
-		string text = $"¿Eliminar {selected.Count} elemento(s) del modelo?" +
+		string text = $"¿Eliminar {selected.Count} DWG del modelo?" +
 			(pinned > 0 ? $"\n\n{pinned} está(n) fijado(s); se desfijarán para eliminarlos." : string.Empty) +
-			"\n\nSí: eliminar también el archivo DWG del proyecto (vínculo / importación) cuando no queden más instancias." +
-			"\nNo: eliminar solo las instancias seleccionadas." +
+			"\n\nTambién se quita el archivo DWG del proyecto cuando no le quedan más instancias, así no queda en la lista." +
 			"\n\nLa acción se puede deshacer con Ctrl+Z en Revit.";
-		DialogResult answer = MessageBox.Show(this, text, "EMASY · Eliminar DWG", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
-		if (answer == DialogResult.Cancel)
+		if (MessageBox.Show(this, text, "EMASY · Eliminar DWG", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK)
 		{
 			return;
 		}
 
-		_handler.DeleteFiles = answer == DialogResult.Yes;
+		_handler.DeleteFiles = true;
 		Run(DwgFinderAction.Delete);
 	}
 
@@ -280,7 +335,7 @@ internal sealed class DwgFinderForm : Form
 		_refresh.Enabled = !busy;
 		if (busy)
 		{
-			_select.Enabled = _locate.Enabled = _delete.Enabled = false;
+			_explode.Enabled = _select.Enabled = _locate.Enabled = _delete.Enabled = false;
 		}
 		else
 		{

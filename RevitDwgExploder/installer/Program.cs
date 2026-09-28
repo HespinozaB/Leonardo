@@ -195,7 +195,7 @@ internal sealed class InstallerForm : Form
 		};
 		var subtitle = new Label
 		{
-			Text = "Explotar DWGs y Buscador DWG's para Autodesk Revit 2024",
+			Text = "Explotar en Vista Actual y Explotar Varios DWG's · Revit 2024",
 			Location = new Point(137, 58),
 			AutoSize = true,
 			ForeColor = Color.DimGray

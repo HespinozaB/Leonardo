@@ -134,17 +134,19 @@ internal sealed class ViewColorSampler : IDisposable
 						tx.Commit();
 					}
 
-					doc.ExportImage(new ImageExportOptions
+					var exportOptions = new ImageExportOptions
 					{
 						FilePath = Path.Combine(tempDir, "colors"),
 						ZoomType = ZoomFitType.FitToPage,
 						PixelSize = PixelSize,
 						ImageResolution = ImageResolution.DPI_150,
 						FitDirection = width >= height ? FitDirectionType.Horizontal : FitDirectionType.Vertical,
-						ExportRange = ExportRange.CurrentView,
+						ExportRange = ExportRange.SetOfViews,
 						HLRandWFViewsFileType = ImageFileType.PNG,
 						ShadowViewsFileType = ImageFileType.PNG
-					});
+					};
+					exportOptions.SetViewsAndSheets(new List<ElementId> { view.Id });
+					doc.ExportImage(exportOptions);
 				}
 				finally
 				{

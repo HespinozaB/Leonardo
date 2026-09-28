@@ -42,7 +42,8 @@ internal enum DwgFinderAction
 	Refresh,
 	Select,
 	Locate,
-	Delete
+	Delete,
+	Explode
 }
 
 /// <summary>
@@ -56,6 +57,12 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 	public List<long> Ids = new List<long>();
 
 	public bool DeleteFiles;
+
+	/// <summary>Explotar: ajustar la escala de la vista si los textos del DWG son demasiado pequeños.</summary>
+	public bool AdjustScale = true;
+
+	/// <summary>Explotar: eliminar los DWG originales una vez explotados.</summary>
+	public bool DeleteOriginals;
 
 	/// <summary>Modelo al que pertenece la lista mostrada (las acciones solo se aplican a ese modelo).</summary>
 	public string DocumentTitle;
@@ -94,6 +101,13 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 				case DwgFinderAction.Delete:
 					message = Delete(doc, ids, DeleteFiles);
 					break;
+				case DwgFinderAction.Explode:
+					message = Explode(app, uiDoc, ids, AdjustScale, DeleteOriginals);
+					break;
+				case DwgFinderAction.Refresh:
+					// Redibuja la vista activa para que desaparezca lo eliminado.
+					uiDoc.RefreshActiveView();
+					break;
 			}
 		}
 		catch (Exception ex)
@@ -104,7 +118,94 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		OnResult?.Invoke(Collect(doc), doc.Title, message);
 	}
 
-	public string GetName() => "EMASY - Buscador DWG's";
+	public string GetName() => "EMASY - Explotar Varios DWG's";
+
+	/// <summary>
+	/// Explota en lote los CAD elegidos. Cada CAD se explota en su vista: la propia si es "solo en su vista";
+	/// si es de modelo, la vista activa si lo muestra o, si no, una planta de su nivel. Una transacción por vista.
+	/// </summary>
+	private static string Explode(UIApplication app, UIDocument uiDoc, List<ElementId> ids, bool adjustScale, bool deleteOriginals)
+	{
+		Document doc = uiDoc.Document;
+		List<ImportInstance> instances = ids.Select(id => doc.GetElement(id)).OfType<ImportInstance>().ToList();
+		if (instances.Count == 0)
+		{
+			return "No hay DWG que explotar (los archivos sin instancias no se pueden explotar).";
+		}
+
+		View active = uiDoc.ActiveView;
+		var shownInActive = new HashSet<ElementId>();
+		try
+		{
+			shownInActive.UnionWith(new FilteredElementCollector(doc, active.Id).OfClass(typeof(ImportInstance)).ToElementIds());
+		}
+		catch (Exception)
+		{
+		}
+
+		var byView = new Dictionary<ElementId, (View View, List<ImportInstance> Items)>();
+		var skipped = new List<ImportInstance>();
+		foreach (ImportInstance instance in instances)
+		{
+			View view = null;
+			if (instance.OwnerViewId != ElementId.InvalidElementId)
+			{
+				view = doc.GetElement(instance.OwnerViewId) as View;
+			}
+			else if (shownInActive.Contains(instance.Id) && ExplodeDwgAvailability.SupportsDetailCurves(active))
+			{
+				view = active;
+			}
+			else
+			{
+				view = FindViewShowing(doc, new List<ElementId> { instance.Id }, ElementId.InvalidElementId);
+			}
+
+			if (view == null || !ExplodeDwgAvailability.SupportsDetailCurves(view))
+			{
+				skipped.Add(instance);
+				continue;
+			}
+
+			if (!byView.TryGetValue(view.Id, out var group))
+			{
+				group = (view, new List<ImportInstance>());
+				byView[view.Id] = group;
+			}
+
+			group.Items.Add(instance);
+		}
+
+		if (byView.Count == 0)
+		{
+			return "Ninguno de los DWG está en una vista donde se puedan crear líneas de detalle.";
+		}
+
+		List<ImportInstance> toExplode = byView.Values.SelectMany(g => g.Items).ToList();
+		Dictionary<ElementId, string> manualPaths = ExplodeDwgCommand.AskForManualDwgPaths(doc, toExplode);
+		var stats = new ExplodeDwgCommand.Stats();
+		var exploded = new List<ElementId>();
+		double shortCurve = app.Application.ShortCurveTolerance;
+		ExplodeDwgCommand.ScalePolicy policy = adjustScale ? ExplodeDwgCommand.ScalePolicy.Adjust : ExplodeDwgCommand.ScalePolicy.Keep;
+		foreach (var (view, items) in byView.Values)
+		{
+			if (ExplodeDwgCommand.ExplodeInView(doc, view, items, manualPaths, shortCurve, policy, stats))
+			{
+				stats.Views++;
+				exploded.AddRange(items.Select(i => i.Id));
+			}
+		}
+
+		if (deleteOriginals && exploded.Count > 0)
+		{
+			Delete(doc, exploded, deleteFiles: true);
+			stats.DeletedOriginals = exploded.Count;
+		}
+
+		ExplodeDwgCommand.ShowSummary(stats);
+		return $"{exploded.Count} DWG explotado(s) en {stats.Views} vista(s)" +
+			(skipped.Count > 0 ? $"; {skipped.Count} omitido(s) por no estar en una vista 2D." : ".");
+	}
 
 	private static string Locate(UIDocument uiDoc, List<ElementId> ids)
 	{
@@ -199,7 +300,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			tx.Commit();
 		}
 
-		return $"{deleted} elemento(s) eliminado(s)" + (deleteFiles ? " (y sus archivos si no quedaban más instancias)." : ".");
+		return $"{deleted} elemento(s) eliminado(s)" + (deleteFiles ? " (y su archivo DWG del proyecto si no le quedaban más instancias)." : ".");
 	}
 
 	/// <summary>Todas las instancias de CAD del modelo y los archivos CAD que ya no tienen instancias.</summary>

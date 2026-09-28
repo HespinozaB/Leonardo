@@ -57,9 +57,28 @@ public class ExplodeDwgCommand : IExternalCommand
 			return Result.Cancelled;
 		}
 
-		double minLength = commandData.Application.Application.ShortCurveTolerance * 1.01;
+		double shortCurve = commandData.Application.Application.ShortCurveTolerance;
 		Dictionary<ElementId, string> manualPaths = AskForManualDwgPaths(doc, targets);
 		var stats = new Stats();
+		if (!ExplodeInView(doc, view, targets, manualPaths, shortCurve, ScalePolicy.Ask, stats))
+		{
+			message = "No se pudo confirmar la transacción.";
+			return Result.Failed;
+		}
+
+		ShowSummary(stats);
+		return Result.Succeeded;
+	}
+
+	/// <summary>
+	/// Explota los CAD indicados en una vista (Detail Lines, Filled Regions y TextNotes) en una transacción.
+	/// Se usa tanto desde "Explotar en Vista Actual" como desde "Explotar Varios DWG's" (una vez por vista).
+	/// Las estadísticas se acumulan en <paramref name="stats"/>. Devuelve false si Revit no confirmó la transacción.
+	/// </summary>
+	internal static bool ExplodeInView(Document doc, View view, List<ImportInstance> targets, Dictionary<ElementId, string> manualPaths,
+		double shortCurveTolerance, ScalePolicy scalePolicy, Stats stats)
+	{
+		double minLength = shortCurveTolerance * 1.01;
 
 		// 1) Leer textos (fuera de la transacción principal: exportar requiere documento no modificable).
 		var textsByInstance = new Dictionary<ElementId, (List<DwgTextImporter.DwgTextEntry> Texts, bool IsOcr)>();
@@ -129,11 +148,11 @@ public class ExplodeDwgCommand : IExternalCommand
 				// Textos del DWG más pequeños que lo que Revit permite a la escala de la vista: se ofrece
 				// ajustar la escala de la vista para que conserven su tamaño relativo al dibujo.
 				double minTextSize = MinTextSizeFeet;
-				AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats);
+				AdjustViewScaleIfNeeded(view, textsByInstance.Values.SelectMany(v => v.Texts), minTextSize, stats, scalePolicy);
 				var textTypeCache = new TextNoteTypeCache(doc, view.Scale, minTextSize);
 
 				var lineStyles = new LineStyleMapper(doc);
-				var regions = new FilledRegionBuilder(doc, view, commandData.Application.Application.ShortCurveTolerance);
+				var regions = new FilledRegionBuilder(doc, view, shortCurveTolerance);
 				var layers = new LayerLookup(doc);
 				var geometryOptions = new Options
 				{
@@ -218,18 +237,16 @@ public class ExplodeDwgCommand : IExternalCommand
 					stats.Processed++;
 				}
 
-				stats.CreatedStyles = lineStyles.CreatedStyles;
-				stats.CreatedPatterns = lineStyles.CreatedPatterns;
-				stats.FilledRegions = regions.Created;
-				stats.FillPatterns = regions.CreatedPatterns;
-				stats.FailedRegions = regions.Failed;
+				stats.CreatedStyles += lineStyles.CreatedStyles;
+				stats.CreatedPatterns += lineStyles.CreatedPatterns;
+				stats.FilledRegions += regions.Created;
+				stats.FillPatterns += regions.CreatedPatterns;
+				stats.FailedRegions += regions.Failed;
 				if (tx.Commit() != TransactionStatus.Committed)
 				{
-					message = "No se pudo confirmar la transacción.";
-					return Result.Failed;
+					return false;
 				}
 			}
-
 		}
 		finally
 		{
@@ -239,11 +256,18 @@ public class ExplodeDwgCommand : IExternalCommand
 			}
 		}
 
-		ShowSummary(stats);
-		return Result.Succeeded;
+		return true;
 	}
 
-	private sealed class Stats
+	/// <summary>Qué hacer si los textos del DWG son demasiado pequeños para la escala de la vista.</summary>
+	internal enum ScalePolicy
+	{
+		Ask,
+		Adjust,
+		Keep
+	}
+
+	internal sealed class Stats
 	{
 		public int NotLinked;
 		public int Unreadable;
@@ -262,9 +286,12 @@ public class ExplodeDwgCommand : IExternalCommand
 		public int FillPatterns;
 		public int FailedRegions;
 		public int HatchLinesReplaced;
+		public int Views;
+		public int ScaleChanges;
+		public int DeletedOriginals;
 	}
 
-	private static void ShowSummary(Stats s)
+	internal static void ShowSummary(Stats s)
 	{
 		string notLinked = s.NotLinked > 0
 			? $"\n{s.NotLinked} DWG estaban importados (no vinculados) o sin archivo indicado: para esos el texto se obtuvo reexportando la vista a DWG, o por OCR si eso tampoco dio resultado."
@@ -288,9 +315,23 @@ public class ExplodeDwgCommand : IExternalCommand
 			}
 		}
 
-		if (s.NewScale > 0)
+		if (s.ScaleChanges > 1)
+		{
+			styles += $"\nEscala ajustada en {s.ScaleChanges} vistas para que los textos conserven el tamaño del DWG.";
+		}
+		else if (s.NewScale > 0)
 		{
 			styles += $"\nEscala de la vista cambiada de 1:{s.OldScale} a 1:{s.NewScale} para que los textos conserven el tamaño del DWG.";
+		}
+
+		if (s.Views > 1)
+		{
+			styles = $"\nVistas procesadas: {s.Views}." + styles;
+		}
+
+		if (s.DeletedOriginals > 0)
+		{
+			styles += $"\n{s.DeletedOriginals} DWG original(es) eliminado(s) después de explotarlos.";
 		}
 
 		if (s.ClampedTexts > 0)
@@ -309,7 +350,7 @@ public class ExplodeDwgCommand : IExternalCommand
 			$"TextNotes con texto exacto: {s.ExactTexts}\n" +
 			$"TextNotes por OCR (aproximados): {s.OcrTexts}" +
 			styles + notLinked + unreadable +
-			"\n\nLos DWG originales no se modificaron ni se eliminaron." + ocr);
+			(s.DeletedOriginals > 0 ? string.Empty : "\n\nLos DWG originales no se modificaron ni se eliminaron.") + ocr);
 	}
 
 	// ---------------------------------------------------------------- Textos
@@ -393,7 +434,7 @@ public class ExplodeDwgCommand : IExternalCommand
 	/// Revit a la escala actual de la vista (DWG pequeño o insertado a escala reducida), propone cambiar
 	/// la escala de la vista a una en la que todos conserven su tamaño relativo al dibujo.
 	/// </summary>
-	private static void AdjustViewScaleIfNeeded(View view, IEnumerable<DwgTextImporter.DwgTextEntry> allTexts, double minTextSize, Stats stats)
+	private static void AdjustViewScaleIfNeeded(View view, IEnumerable<DwgTextImporter.DwgTextEntry> allTexts, double minTextSize, Stats stats, ScalePolicy policy)
 	{
 		List<double> heights = allTexts.Where(t => t.HeightFeet > 1E-06).Select(t => t.HeightFeet * TextHeightFactor).OrderBy(h => h).ToList();
 		if (heights.Count == 0)
@@ -427,8 +468,14 @@ public class ExplodeDwgCommand : IExternalCommand
 			canChange = false;
 		}
 
-		if (!canChange)
+		if (!canChange || policy == ScalePolicy.Keep)
 		{
+			return;
+		}
+
+		if (policy == ScalePolicy.Adjust)
+		{
+			ApplyScale(view, scale, suggested, stats);
 			return;
 		}
 
@@ -449,11 +496,17 @@ public class ExplodeDwgCommand : IExternalCommand
 			return;
 		}
 
+		ApplyScale(view, scale, suggested, stats);
+	}
+
+	private static void ApplyScale(View view, int oldScale, int newScale, Stats stats)
+	{
 		try
 		{
-			view.Scale = suggested;
-			stats.OldScale = scale;
-			stats.NewScale = suggested;
+			view.Scale = newScale;
+			stats.OldScale = oldScale;
+			stats.NewScale = newScale;
+			stats.ScaleChanges++;
 		}
 		catch (Exception)
 		{
@@ -1211,7 +1264,7 @@ public class ExplodeDwgCommand : IExternalCommand
 
 	// ---------------------------------------------------------------- Selección / diálogos
 
-	private static Dictionary<ElementId, string> AskForManualDwgPaths(Document doc, List<ImportInstance> targets)
+	internal static Dictionary<ElementId, string> AskForManualDwgPaths(Document doc, List<ImportInstance> targets)
 	{
 		var result = new Dictionary<ElementId, string>();
 		List<ImportInstance> unresolved = targets.Where(i => !HasResolvableLink(doc, i)).ToList();

@@ -28,11 +28,11 @@ public class App : IExternalApplication
 		string assemblyPath = Assembly.GetExecutingAssembly().Location;
 		var buttonData = new PushButtonData(
 			"ExplodeDwgCommand",
-			"Explotar" + Environment.NewLine + "DWGs",
+			"Explotar en" + Environment.NewLine + "Vista Actual",
 			assemblyPath,
 			"RevitDwgExploder.Commands.ExplodeDwgCommand")
 		{
-			ToolTip = "Convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en Detail Lines, " +
+			ToolTip = "Explota los DWG de la vista actual (o los seleccionados): los convierte en Detail Lines, " +
 				"Filled Regions y TextNotes nativos (misma posición, escala, capas, tipos de línea y hatch), sin modificar el DWG original.",
 			LargeImage = LoadIcon("RevitDwgExploder.icon32.png"),
 			Image = LoadIcon("RevitDwgExploder.icon16.png"),
@@ -42,12 +42,12 @@ public class App : IExternalApplication
 
 		var finderData = new PushButtonData(
 			"DwgFinderCommand",
-			"Buscador" + Environment.NewLine + "DWG's",
+			"Explotar" + Environment.NewLine + "Varios DWG's",
 			assemblyPath,
 			"RevitDwgExploder.Commands.DwgFinderCommand")
 		{
-			ToolTip = "Lista todos los archivos DWG/CAD del modelo (vinculados, importados y sin instancias) y permite " +
-				"seleccionarlos, ubicarlos o eliminarlos.",
+			ToolTip = "Lista todos los DWG/CAD del modelo y permite explotar varios a la vez (cada uno en su vista), " +
+				"además de seleccionarlos, ubicarlos o eliminarlos.",
 			LargeImage = LoadIcon("RevitDwgExploder.finder32.png"),
 			Image = LoadIcon("RevitDwgExploder.finder16.png"),
 			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
