@@ -35,6 +35,25 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.9
+
+### Colores de los rellenos (equipos que salían en blanco)
+- En la 1.8 la lectura de colores desde la imagen de la vista pasó a mandar y dejó todo en blanco: la imagen
+  quedaba desalineada porque incluía cotas, textos y otros elementos fuera del CAD. Ahora:
+  - durante la captura se **ocultan temporalmente** todos los demás elementos de la vista (y se activa el
+    recorte de anotaciones), así la imagen es solo el CAD; todo se deshace después;
+  - si la imagen no tiene las proporciones del área del CAD, se descarta;
+  - la imagen **ya no manda**: primero se comprueba que lo leído coincide con los colores conocidos (material
+    del relleno o color del DWG) en al menos el 60 % de los casos; si no, se ignora.
+- Orden de prioridad del color de un relleno de Revit: **material** (color real, incluido el blanco de las
+  máscaras) → imagen (si es fiable) → color habitual de la capa → color de la capa.
+
+### Instalador
+- Al terminar de instalar/actualizar/desinstalar aparece una ventana de confirmación con el botón **Cerrar**,
+  que cierra también el instalador.
+- Se quitó el mensaje "0 archivo(s) desbloqueado(s)" (los archivos que copia el instalador nunca quedan
+  bloqueados); ahora indica que todos los archivos quedaron listos.
+
 ## Cambios de la versión 1.8
 
 ### Rellenos (hatch) negros donde el DWG tenía máscaras blancas

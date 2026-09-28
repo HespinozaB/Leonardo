@@ -86,8 +86,9 @@ internal static class Program
 			}
 		}
 
-		int unblocked = UnblockAll();
-		return $"EMASY DWG Tools instalado en:\n{AddinsFolder}\n\n{unblocked} archivo(s) desbloqueado(s). Abre Revit {RevitYear}: pestaña EMASY → DWG Tools.";
+		// Los archivos que escribe el instalador no llevan la marca de "descargado"; por si acaso, se quita.
+		UnblockAll();
+		return $"EMASY DWG Tools instalado en:\n{AddinsFolder}\n\nTodos los archivos quedaron listos (sin bloqueo de Windows). Abre Revit {RevitYear}: pestaña EMASY → DWG Tools.";
 	}
 
 	internal static string Uninstall()
@@ -245,16 +246,19 @@ internal sealed class InstallerForm : Form
 			}
 		}
 
+		string result;
 		try
 		{
 			UseWaitCursor = true;
+			result = action();
 			_status.ForeColor = Color.DarkGreen;
-			_status.Text = action();
+			_status.Text = result;
 		}
 		catch (Exception ex)
 		{
 			_status.ForeColor = Color.Firebrick;
 			_status.Text = "No se pudo completar: " + ex.Message;
+			return;
 		}
 		finally
 		{
@@ -262,5 +266,56 @@ internal sealed class InstallerForm : Form
 			_install.Text = Program.IsInstalled ? "Actualizar" : "Instalar";
 			_uninstall.Enabled = Program.IsInstalled;
 		}
+
+		// Aviso final con un único botón "Cerrar", que cierra también el instalador.
+		using (var done = new DoneDialog(result))
+		{
+			done.ShowDialog(this);
+		}
+
+		Close();
+	}
+}
+
+/// <summary>Ventana final: confirma el resultado y ofrece solo "Cerrar".</summary>
+internal sealed class DoneDialog : Form
+{
+	public DoneDialog(string message)
+	{
+		Text = "EMASY DWG Tools";
+		FormBorderStyle = FormBorderStyle.FixedDialog;
+		MaximizeBox = false;
+		MinimizeBox = false;
+		ShowInTaskbar = false;
+		StartPosition = FormStartPosition.CenterParent;
+		ClientSize = new Size(440, 190);
+		Font = new Font("Segoe UI", 9.5f);
+		BackColor = Color.White;
+
+		var title = new Label
+		{
+			Text = "✔  Proceso completado",
+			Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+			ForeColor = Color.DarkGreen,
+			Location = new Point(20, 16),
+			AutoSize = true
+		};
+		var text = new Label
+		{
+			Text = message,
+			Location = new Point(22, 50),
+			Size = new Size(400, 90)
+		};
+		var close = new Button
+		{
+			Text = "Cerrar",
+			DialogResult = DialogResult.OK,
+			Location = new Point(330, 146),
+			Size = new Size(90, 30)
+		};
+
+		Controls.AddRange(new Control[] { title, text, close });
+		AcceptButton = close;
+		CancelButton = close;
 	}
 }

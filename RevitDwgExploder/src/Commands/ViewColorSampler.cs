@@ -92,6 +92,37 @@ internal sealed class ViewColorSampler : IDisposable
 					using (var tx = new Transaction(doc, "EMASY: recorte temporal"))
 					{
 						tx.Start();
+
+						// Solo el CAD en la imagen: se ocultan temporalmente los demás elementos de la vista
+						// (cotas, textos, rejillas, muros…), que además agrandarían la imagen fuera del recorte.
+						List<ElementId> others = new FilteredElementCollector(doc, view.Id)
+							.WhereElementIsNotElementType()
+							.Where(e => e.Id != instance.Id && e.CanBeHidden(view))
+							.Select(e => e.Id)
+							.ToList();
+						if (others.Count > 0)
+						{
+							try
+							{
+								view.HideElements(others);
+							}
+							catch (Exception)
+							{
+							}
+						}
+
+						try
+						{
+							Parameter annotationCrop = view.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE);
+							if (annotationCrop != null && !annotationCrop.IsReadOnly)
+							{
+								annotationCrop.Set(1);
+							}
+						}
+						catch (Exception)
+						{
+						}
+
 						view.CropBoxActive = true;
 						view.CropBoxVisible = false;
 						view.CropBox = new BoundingBoxXYZ
@@ -133,8 +164,17 @@ internal sealed class ViewColorSampler : IDisposable
 				bitmap = new Bitmap(loaded);
 			}
 
-			double fpp = Math.Max(width / bitmap.Width, height / bitmap.Height);
-			return new ViewColorSampler(bitmap, toCrop, minX, maxY, fpp);
+			// La imagen debe tener las proporciones del área recortada; si no (Revit añadió márgenes u otro
+			// contenido), la correspondencia punto → píxel no es fiable y no se usa.
+			double fppX = width / bitmap.Width;
+			double fppY = height / bitmap.Height;
+			if (Math.Abs(fppX - fppY) > Math.Max(fppX, fppY) * 0.03)
+			{
+				bitmap.Dispose();
+				return null;
+			}
+
+			return new ViewColorSampler(bitmap, toCrop, minX, maxY, (fppX + fppY) / 2.0);
 		}
 		catch (Exception)
 		{

@@ -913,6 +913,23 @@ public class ExplodeDwgCommand : IExternalCommand
 			.Select(poly => (poly, Box(poly)))
 			.ToList();
 
+		// Color leído de la imagen para cada pieza, y si esa lectura es fiable: debe coincidir con el
+		// material en la mayoría de las piezas que sí lo tienen (si la imagen quedó desalineada, no se usa).
+		var shownColors = new Color[pieces.Count];
+		if (sampler != null)
+		{
+			for (int index = 0; index < pieces.Count; index++)
+			{
+				var box = shapes[index].Box;
+				IEnumerable<List<List<XYZ>>> others = shapes
+					.Where((o, k) => k != index && Overlaps(o.Box, box))
+					.Select(o => o.Polygons);
+				shownColors[index] = sampler.Sample(HatchAreaIndex.InteriorPoint(shapes[index].Polygons, others));
+			}
+		}
+
+		bool samplerTrusted = IsSamplerTrusted(pieces.Select((p, i) => (p.Material, shownColors[i])));
+
 		for (int index = 0; index < pieces.Count; index++)
 		{
 			var (loops, sample, material, styleId) = pieces[index];
@@ -928,20 +945,11 @@ public class ExplodeDwgCommand : IExternalCommand
 				continue;
 			}
 
-			// El color que Revit muestra (leído de la imagen) manda; si no se pudo leer, el material, el color
+			// El material del relleno es el color real del hatch (incluido el blanco de las máscaras). Si no
+			// tiene, el color leído de la imagen (solo si se comprobó que la imagen es fiable), y luego el color
 			// habitual de la capa, etc.
-			Color shown = null;
-			if (sampler != null)
-			{
-				var box = shapes[index].Box;
-				IEnumerable<List<List<XYZ>>> others = shapes
-					.Where((o, k) => k != index && Overlaps(o.Box, box))
-					.Select(o => o.Polygons);
-				shown = sampler.Sample(HatchAreaIndex.InteriorPoint(shapes[index].Polygons, others));
-			}
-
-			Color color = shown
-				?? material
+			Color color = material
+				?? (samplerTrusted ? shownColors[index] : null)
 				?? (colorByStyle.TryGetValue(styleId, out Color styleColor) ? styleColor : null)
 				?? layers.ColorOf(styleId)
 				?? commonColor;
@@ -958,8 +966,10 @@ public class ExplodeDwgCommand : IExternalCommand
 	}
 
 	/// <summary>
-	/// Corrige el color de los hatch sólidos con el color que Revit muestra realmente en su interior
-	/// (punto elegido fuera de otros hatch que lo tapen).
+	/// Corrige el color de los hatch sólidos con el color que Revit muestra en su interior (punto elegido
+	/// fuera de otros hatch que lo tapen), pero solo si la imagen es fiable: la lectura debe coincidir con el
+	/// color del DWG en la mayoría de los hatch. Así se corrigen los casos puntuales (colores "por bloque"
+	/// mal resueltos) sin que una imagen desalineada estropee todos los colores.
 	/// </summary>
 	private static void ApplySampledColors(List<HatchRegion> hatches, ViewColorSampler sampler)
 	{
@@ -969,6 +979,7 @@ public class ExplodeDwgCommand : IExternalCommand
 		}
 
 		var boxes = hatches.Select(h => Box(h.Loops)).ToList();
+		var shown = new Color[hatches.Count];
 		for (int i = 0; i < hatches.Count; i++)
 		{
 			if (!hatches[i].IsSolid)
@@ -980,14 +991,47 @@ public class ExplodeDwgCommand : IExternalCommand
 			IEnumerable<List<List<XYZ>>> others = hatches
 				.Where((h, k) => k != i && Overlaps(boxes[k], box))
 				.Select(h => h.Loops);
-			Color color = sampler.Sample(HatchAreaIndex.InteriorPoint(hatches[i].Loops, others));
-			if (color != null)
+			shown[i] = sampler.Sample(HatchAreaIndex.InteriorPoint(hatches[i].Loops, others));
+		}
+
+		if (!IsSamplerTrusted(hatches.Select((h, i) => (h.IsSolid ? new Color(h.R, h.G, h.B) : null, shown[i]))))
+		{
+			return;
+		}
+
+		for (int i = 0; i < hatches.Count; i++)
+		{
+			if (shown[i] != null)
 			{
-				hatches[i].R = color.Red;
-				hatches[i].G = color.Green;
-				hatches[i].B = color.Blue;
+				hatches[i].R = shown[i].Red;
+				hatches[i].G = shown[i].Green;
+				hatches[i].B = shown[i].Blue;
 			}
 		}
+	}
+
+	/// <summary>
+	/// La imagen es fiable si, donde conocemos el color (material o color del DWG), lo leído coincide en al
+	/// menos el 60 % de al menos 3 casos. Con menos referencias no se puede comprobar y no se usa.
+	/// </summary>
+	private static bool IsSamplerTrusted(IEnumerable<(Color Known, Color Shown)> pairs)
+	{
+		int total = 0, agree = 0;
+		foreach (var (known, shown) in pairs)
+		{
+			if (known == null || shown == null)
+			{
+				continue;
+			}
+
+			total++;
+			if (Math.Abs(known.Red - shown.Red) + Math.Abs(known.Green - shown.Green) + Math.Abs(known.Blue - shown.Blue) <= 90)
+			{
+				agree++;
+			}
+		}
+
+		return total >= 3 && agree >= total * 0.6;
 	}
 
 	private static (double MinX, double MinY, double MaxX, double MaxY) Box(List<List<XYZ>> polygons)
