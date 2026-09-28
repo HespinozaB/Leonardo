@@ -36,10 +36,16 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 
 	private SpatialPointIndex _existingTextNotes;
 
-	public DwgRoundTripTextExtractor(Document doc, View view)
+	private readonly List<ElementId> _targets;
+
+	/// <summary>True si la exportación falló (no si simplemente el CAD no tiene textos).</summary>
+	public bool ExportFailed { get; private set; }
+
+	public DwgRoundTripTextExtractor(Document doc, View view, IEnumerable<ElementId> targets)
 	{
 		_doc = doc;
 		_view = view;
+		_targets = targets?.ToList() ?? new List<ElementId>();
 		_tempDir = Path.Combine(Path.GetTempPath(), "RevitDwgExploder_" + Guid.NewGuid().ToString("N"));
 	}
 
@@ -219,16 +225,14 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 		try
 		{
 			Directory.CreateDirectory(_tempDir);
+			// Una sola exportación: si el CAD no tiene textos, exportar de nuevo con otro modo no los crea.
 			_cadDoc = ExportAndRead(TextTreatment.Approximate);
+			ExportFailed = _cadDoc == null;
 			_texts = CadTextCollector.Collect(_cadDoc);
-			if (_texts.Count == 0)
-			{
-				_cadDoc = ExportAndRead(TextTreatment.Exact);
-				_texts = CadTextCollector.Collect(_cadDoc);
-			}
 		}
 		catch (Exception)
 		{
+			ExportFailed = true;
 			_texts = new List<RawText>();
 		}
 	}
@@ -245,7 +249,29 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 			TextTreatment = textTreatment,
 			FileVersion = ACADVersion.R2013
 		};
-		_doc.Export(folder, "roundtrip", new List<ElementId> { _view.Id }, options);
+		// Solo los CAD a explotar, recortados a su área: la exportación es mucho más pequeña y rápida, y se
+		// evita el aviso de Revit "los contornos de la vista son demasiado grandes para su exportación".
+		// Todo ocurre en un TransactionGroup que se deshace: la vista queda intacta.
+		using (var group = new TransactionGroup(_doc, "EMASY: exportación temporal"))
+		{
+			group.Start();
+			try
+			{
+				using (var tx = new Transaction(_doc, "EMASY: aislar CAD"))
+				{
+					tx.Start();
+					IsolateTargets();
+					tx.Commit();
+				}
+
+				_doc.Export(folder, "roundtrip", new List<ElementId> { _view.Id }, options);
+			}
+			finally
+			{
+				group.RollBack();
+			}
+		}
+
 		string file = Directory.GetFiles(folder, "*.dwg").OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
 		if (file == null)
 		{
@@ -259,6 +285,78 @@ internal sealed class DwgRoundTripTextExtractor : IDisposable
 		catch (Exception)
 		{
 			return null;
+		}
+	}
+
+	/// <summary>Oculta todo lo que no son los CAD a explotar y, si la vista lo permite, la recorta a su área.</summary>
+	private void IsolateTargets()
+	{
+		if (_targets.Count == 0)
+		{
+			return;
+		}
+
+		var keep = new HashSet<ElementId>(_targets);
+		try
+		{
+			List<ElementId> others = new FilteredElementCollector(_doc, _view.Id)
+				.WhereElementIsNotElementType()
+				.Where(e => !keep.Contains(e.Id) && e.CanBeHidden(_view))
+				.Select(e => e.Id)
+				.ToList();
+			if (others.Count > 0)
+			{
+				_view.HideElements(others);
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		try
+		{
+			BoundingBoxXYZ crop = _view.CropBox;
+			if (crop == null)
+			{
+				return;
+			}
+
+			Transform toCrop = (crop.Transform ?? Transform.Identity).Inverse;
+			var points = new List<XYZ>();
+			foreach (ElementId id in _targets)
+			{
+				BoundingBoxXYZ box = _doc.GetElement(id)?.get_BoundingBox(_view);
+				if (box == null)
+				{
+					continue;
+				}
+
+				points.Add(toCrop.OfPoint(box.Min));
+				points.Add(toCrop.OfPoint(box.Max));
+				points.Add(toCrop.OfPoint(new XYZ(box.Min.X, box.Max.Y, box.Min.Z)));
+				points.Add(toCrop.OfPoint(new XYZ(box.Max.X, box.Min.Y, box.Min.Z)));
+			}
+
+			if (points.Count == 0)
+			{
+				return;
+			}
+
+			double minX = points.Min(p => p.X), maxX = points.Max(p => p.X);
+			double minY = points.Min(p => p.Y), maxY = points.Max(p => p.Y);
+			double mx = (maxX - minX) * 0.05 + 0.1, my = (maxY - minY) * 0.05 + 0.1;
+			_view.CropBoxActive = true;
+			_view.CropBoxVisible = false;
+			_view.CropBox = new BoundingBoxXYZ
+			{
+				Transform = crop.Transform,
+				Min = new XYZ(minX - mx, minY - my, crop.Min.Z),
+				Max = new XYZ(maxX + mx, maxY + my, crop.Max.Z)
+			};
+		}
+		catch (Exception)
+		{
+			// Leyendas y vistas de dibujo no admiten recorte: basta con haber ocultado lo demás.
 		}
 	}
 

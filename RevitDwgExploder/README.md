@@ -35,6 +35,20 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.12
+
+### Explotar más rápido y sin el aviso "contornos demasiado grandes"
+- La reexportación a DWG (para leer los textos de CAD importados) ya no exporta la vista completa: se ocultan
+  temporalmente los demás elementos y, si la vista lo permite, se recorta al área de los CAD. Es mucho más
+  pequeña y rápida, y evita el aviso de Revit de contornos demasiado grandes. Todo se deshace después.
+- Una sola exportación por vista (antes, si el CAD no tenía textos, se exportaba dos veces).
+- El OCR (lento) solo se usa si la exportación falla; si funcionó y no hay textos, el CAD no tiene textos.
+- La imagen para leer colores se hace **una vez por vista** (no una por CAD) y **solo si algún CAD tiene
+  rellenos**; resolución algo menor.
+- En **Explotar Varios DWG's**, una vista con problemas ya no detiene el lote: se sigue con las demás y el
+  resumen indica cuáles fallaron (se pueden explotar luego con "Explotar en Vista Actual"). Los avisos
+  modales de Revit durante el lote se cancelan automáticamente para no quedar esperando.
+
 ## Cambios de la versión 1.11
 
 ### Nombres de los comandos

@@ -84,17 +84,20 @@ public class ExplodeDwgCommand : IExternalCommand
 		var textsByInstance = new Dictionary<ElementId, (List<DwgTextImporter.DwgTextEntry> Texts, bool IsOcr)>();
 		var exportedHatches = new Dictionary<ElementId, List<HatchRegion>>();
 
-		// Imagen de cada CAD tal como se ve ahora, para leer el color real de los rellenos.
+		// Imagen de los CAD tal como se ven ahora, para leer el color real de los rellenos: una sola por vista,
+		// y solo si algún CAD tiene rellenos (la mayoría de detalles son solo líneas y textos).
 		var samplers = new Dictionary<ElementId, ViewColorSampler>();
-		foreach (ImportInstance instance in targets)
+		List<ImportInstance> withFills = targets.Where(t => ViewColorSampler.HasFills(t, view)).ToList();
+		ViewColorSampler viewSampler = withFills.Count > 0 ? ViewColorSampler.Capture(doc, view, withFills) : null;
+		foreach (ImportInstance instance in withFills)
 		{
-			samplers[instance.Id] = ViewColorSampler.Capture(doc, view, instance);
+			samplers[instance.Id] = viewSampler;
 		}
 
 		try
 		{
 			var fileCache = new DwgTextImporter.FileCache();
-			using (var roundTrip = new DwgRoundTripTextExtractor(doc, view))
+			using (var roundTrip = new DwgRoundTripTextExtractor(doc, view, targets.Select(t => t.Id)))
 			{
 				foreach (ImportInstance instance in targets)
 				{
@@ -131,7 +134,10 @@ public class ExplodeDwgCommand : IExternalCommand
 						continue;
 					}
 
-					textsByInstance[instance.Id] = (DwgTextImageOcr.Recognize(doc, view, instance), true);
+					// OCR (lento) solo si la exportación falló; si funcionó y no hay textos, el CAD no tiene textos.
+					textsByInstance[instance.Id] = roundTrip.ExportFailed
+						? (DwgTextImageOcr.Recognize(doc, view, instance), true)
+						: (new List<DwgTextImporter.DwgTextEntry>(), false);
 				}
 			}
 
@@ -250,10 +256,7 @@ public class ExplodeDwgCommand : IExternalCommand
 		}
 		finally
 		{
-			foreach (ViewColorSampler sampler in samplers.Values)
-			{
-				sampler?.Dispose();
-			}
+			viewSampler?.Dispose();
 		}
 
 		return true;
@@ -289,6 +292,8 @@ public class ExplodeDwgCommand : IExternalCommand
 		public int Views;
 		public int ScaleChanges;
 		public int DeletedOriginals;
+		public List<string> FailedViews = new List<string>();
+		public int SuppressedDialogs;
 	}
 
 	internal static void ShowSummary(Stats s)
@@ -327,6 +332,18 @@ public class ExplodeDwgCommand : IExternalCommand
 		if (s.Views > 1)
 		{
 			styles = $"\nVistas procesadas: {s.Views}." + styles;
+		}
+
+		if (s.FailedViews.Count > 0)
+		{
+			styles += $"\nVistas que no se pudieron explotar ({s.FailedViews.Count}): " +
+				string.Join(", ", s.FailedViews.Take(8)) + (s.FailedViews.Count > 8 ? "…" : string.Empty) +
+				". Puedes abrirlas y usar \"Explotar en Vista Actual\".";
+		}
+
+		if (s.SuppressedDialogs > 0)
+		{
+			styles += $"\n{s.SuppressedDialogs} aviso(s) de Revit se cancelaron automáticamente durante el proceso.";
 		}
 
 		if (s.DeletedOriginals > 0)

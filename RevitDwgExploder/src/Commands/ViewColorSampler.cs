@@ -15,7 +15,7 @@ namespace RevitDwgExploder.Commands;
 /// </summary>
 internal sealed class ViewColorSampler : IDisposable
 {
-	private const int PixelSize = 3000;
+	private const int PixelSize = 2400;
 
 	private readonly Bitmap _bitmap;
 
@@ -36,10 +36,14 @@ internal sealed class ViewColorSampler : IDisposable
 		_feetPerPixel = feetPerPixel;
 	}
 
-	/// <summary>Exporta la zona del CAD a imagen. Devuelve null si no se pudo (la vista queda intacta).</summary>
-	public static ViewColorSampler Capture(Document doc, View view, ImportInstance instance)
+	/// <summary>
+	/// Exporta a imagen la zona de los CAD indicados (una sola imagen para todos los de la vista).
+	/// Devuelve null si no se pudo (la vista queda intacta).
+	/// </summary>
+	public static ViewColorSampler Capture(Document doc, View view, IList<ImportInstance> instances)
 	{
-		BoundingBoxXYZ bbox = instance.get_BoundingBox(view);
+		var keep = new HashSet<ElementId>(instances.Select(i => i.Id));
+		BoundingBoxXYZ bbox = UnionBox(instances.Select(i => i.get_BoundingBox(view)).Where(b => b != null).ToList());
 		BoundingBoxXYZ originalCrop;
 		try
 		{
@@ -97,7 +101,7 @@ internal sealed class ViewColorSampler : IDisposable
 						// (cotas, textos, rejillas, muros…), que además agrandarían la imagen fuera del recorte.
 						List<ElementId> others = new FilteredElementCollector(doc, view.Id)
 							.WhereElementIsNotElementType()
-							.Where(e => e.Id != instance.Id && e.CanBeHidden(view))
+							.Where(e => !keep.Contains(e.Id) && e.CanBeHidden(view))
 							.Select(e => e.Id)
 							.ToList();
 						if (others.Count > 0)
@@ -195,6 +199,61 @@ internal sealed class ViewColorSampler : IDisposable
 			{
 			}
 		}
+	}
+
+	private static BoundingBoxXYZ UnionBox(List<BoundingBoxXYZ> boxes)
+	{
+		if (boxes.Count == 0)
+		{
+			return null;
+		}
+
+		return new BoundingBoxXYZ
+		{
+			Min = new XYZ(boxes.Min(b => b.Min.X), boxes.Min(b => b.Min.Y), boxes.Min(b => b.Min.Z)),
+			Max = new XYZ(boxes.Max(b => b.Max.X), boxes.Max(b => b.Max.Y), boxes.Max(b => b.Max.Z))
+		};
+	}
+
+	/// <summary>
+	/// True si el CAD tiene rellenos (hatch sólidos, que Revit muestra como mallas o láminas): solo entonces
+	/// hace falta la imagen de colores.
+	/// </summary>
+	public static bool HasFills(ImportInstance instance, View view)
+	{
+		try
+		{
+			GeometryElement geometry = instance.get_Geometry(new Options { View = view, ComputeReferences = false });
+			return geometry != null && HasFills(geometry);
+		}
+		catch (Exception)
+		{
+			return true;
+		}
+	}
+
+	private static bool HasFills(GeometryElement geometry)
+	{
+		foreach (GeometryObject obj in geometry)
+		{
+			switch (obj)
+			{
+				case Mesh:
+					return true;
+				case Solid solid when solid.Faces.Size > 0:
+					return true;
+				case GeometryInstance gi:
+					GeometryElement inner = gi.GetInstanceGeometry();
+					if (inner != null && HasFills(inner))
+					{
+						return true;
+					}
+
+					break;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>

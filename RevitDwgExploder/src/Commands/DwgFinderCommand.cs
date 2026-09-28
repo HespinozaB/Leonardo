@@ -187,13 +187,44 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		var exploded = new List<ElementId>();
 		double shortCurve = app.Application.ShortCurveTolerance;
 		ExplodeDwgCommand.ScalePolicy policy = adjustScale ? ExplodeDwgCommand.ScalePolicy.Adjust : ExplodeDwgCommand.ScalePolicy.Keep;
-		foreach (var (view, items) in byView.Values)
+		var failedViews = new List<string>();
+		int suppressedDialogs = 0;
+
+		// Durante el lote, los avisos modales de Revit (p.ej. "contornos demasiado grandes para exportar") se
+		// cancelan solos para no detener el proceso esperando al usuario.
+		void OnDialog(object sender, Autodesk.Revit.UI.Events.DialogBoxShowingEventArgs e)
 		{
-			if (ExplodeDwgCommand.ExplodeInView(doc, view, items, manualPaths, shortCurve, policy, stats))
+			suppressedDialogs++;
+			e.OverrideResult((int)TaskDialogResult.Cancel);
+		}
+
+		app.DialogBoxShowing += OnDialog;
+		try
+		{
+			foreach (var (view, items) in byView.Values)
 			{
-				stats.Views++;
-				exploded.AddRange(items.Select(i => i.Id));
+				try
+				{
+					if (ExplodeDwgCommand.ExplodeInView(doc, view, items, manualPaths, shortCurve, policy, stats))
+					{
+						stats.Views++;
+						exploded.AddRange(items.Select(i => i.Id));
+					}
+					else
+					{
+						failedViews.Add(view.Name);
+					}
+				}
+				catch (Exception)
+				{
+					// Una vista con problemas no detiene el lote.
+					failedViews.Add(view.Name);
+				}
 			}
+		}
+		finally
+		{
+			app.DialogBoxShowing -= OnDialog;
 		}
 
 		if (deleteOriginals && exploded.Count > 0)
@@ -202,8 +233,11 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			stats.DeletedOriginals = exploded.Count;
 		}
 
+		stats.FailedViews = failedViews;
+		stats.SuppressedDialogs = suppressedDialogs;
 		ExplodeDwgCommand.ShowSummary(stats);
 		return $"{exploded.Count} DWG explotado(s) en {stats.Views} vista(s)" +
+			(failedViews.Count > 0 ? $"; {failedViews.Count} vista(s) con error" : string.Empty) +
 			(skipped.Count > 0 ? $"; {skipped.Count} omitido(s) por no estar en una vista 2D." : ".");
 	}
 
