@@ -8,7 +8,7 @@
     <PlatformTarget>AnyCPU</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.12.0</Version>
+    <Version>1.13.0</Version>
     <Product>EMASY DWG Tools</Product>
     <Company>EMASY</Company>
     <Description>Instalador de EMASY DWG Tools para Revit 2024</Description>

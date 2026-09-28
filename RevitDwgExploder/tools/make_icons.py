@@ -72,6 +72,44 @@ def render_finder(stroke, detail=True):
     return img
 
 
+def pdf_badge(d, y, height, text_size):
+    """Etiqueta "PDF" blanca en la parte baja del icono."""
+    from PIL import ImageFont
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", int(u(text_size)))
+    except OSError:
+        font = ImageFont.load_default()
+    d.rounded_rectangle([u(22), u(y), u(78), u(y + height)], radius=int(u(4)), fill=WHITE)
+    d.text((u(50), u(y + height / 2)), "PDF", fill=GRAY, font=font, anchor="mm")
+
+
+def render_pdf(stroke, finder=False, detail=True):
+    """Explotar PDF: hoja explotada (o con lupa) y la etiqueta PDF."""
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([u(1), u(1), u(99), u(99)], fill=GRAY)
+    if finder:
+        poly(d, [(28, 14), (56, 14), (66, 24), (66, 62), (28, 62)], stroke)
+        line(d, (56, 14), (56, 24), stroke)
+        line(d, (56, 24), (66, 24), stroke)
+        cx, cy, r = 64, 48, 11
+        d.ellipse([u(cx - r - stroke), u(cy - r - stroke), u(cx + r + stroke), u(cy + r + stroke)], fill=GRAY)
+        d.ellipse([u(cx - r), u(cy - r), u(cx + r), u(cy + r)], outline=WHITE, width=int(u(stroke)))
+        line(d, (cx + r * 0.7, cy + r * 0.7), (80, 62), stroke * 1.3)
+    else:
+        g = 3.5
+        move = lambda pts, dx, dy: [(x + dx, y + dy) for x, y in pts]
+        poly(d, move([(30, 14), (49, 14), (49, 38), (30, 38)], -g, -g), stroke)
+        poly(d, move([(49, 14), (60, 14), (70, 24), (70, 38), (49, 38)], g, -g), stroke)
+        poly(d, move([(30, 38), (49, 38), (49, 62), (30, 62)], -g, g), stroke)
+        poly(d, move([(49, 38), (70, 38), (70, 62), (49, 62)], g, g), stroke)
+        if detail:
+            line(d, (30 - g, 62 + g), (49 - g, 46 + g), stroke)
+            line(d, (49 + g, 46 + g), (70 + g, 58 + g), stroke)
+    pdf_badge(d, 68, 18, 14)
+    return img
+
+
 def save(size, stroke, name, detail=True):
     render(stroke, detail).resize((size, size), Image.LANCZOS).save(OUT / name)
 
@@ -83,4 +121,10 @@ save(256, 2.6, "icon256.png")
 render_finder(4.2).resize((32, 32), Image.LANCZOS).save(OUT / "finder32.png")
 render_finder(6.5, detail=False).resize((16, 16), Image.LANCZOS).save(OUT / "finder16.png")
 render_finder(2.6).resize((256, 256), Image.LANCZOS).save(OUT / "finder256.png")
+render_pdf(4.0).resize((32, 32), Image.LANCZOS).save(OUT / "pdf32.png")
+render_pdf(6.0, detail=False).resize((16, 16), Image.LANCZOS).save(OUT / "pdf16.png")
+render_pdf(2.6).resize((256, 256), Image.LANCZOS).save(OUT / "pdf256.png")
+render_pdf(4.0, finder=True).resize((32, 32), Image.LANCZOS).save(OUT / "pdffinder32.png")
+render_pdf(6.0, finder=True).resize((16, 16), Image.LANCZOS).save(OUT / "pdffinder16.png")
+render_pdf(2.6, finder=True).resize((256, 256), Image.LANCZOS).save(OUT / "pdffinder256.png")
 print("iconos generados en", OUT)

@@ -31,6 +31,10 @@ internal sealed class DwgFinderForm : Form
 
 	private readonly Button _explode = new Button();
 
+	private readonly Button _addPdf = new Button();
+
+	private readonly FinderMode _mode;
+
 	private readonly Button _select = new Button();
 
 	private readonly CheckBox _moreData = new CheckBox();
@@ -54,8 +58,9 @@ internal sealed class DwgFinderForm : Form
 
 	private string _documentTitle = string.Empty;
 
-	public DwgFinderForm(DwgFinderHandler handler, ExternalEvent externalEvent)
+	public DwgFinderForm(DwgFinderHandler handler, ExternalEvent externalEvent, FinderMode mode = FinderMode.Dwg)
 	{
+		_mode = mode;
 		_handler = handler;
 		_event = externalEvent;
 		_handler.OnResult = (entries, title, message) =>
@@ -80,7 +85,7 @@ internal sealed class DwgFinderForm : Form
 
 	private void BuildLayout()
 	{
-		Text = "EMASY · Explotar Varios DWG's";
+		Text = _mode == FinderMode.Pdf ? "EMASY · Explotar Varios PDF's" : "EMASY · Explotar Varios DWG's";
 		StartPosition = FormStartPosition.CenterScreen;
 		Size = new Size(1150, 560);
 		MinimumSize = new Size(700, 360);
@@ -149,7 +154,10 @@ internal sealed class DwgFinderForm : Form
 		SetupButton(_refresh, "Actualizar", () => Run(DwgFinderAction.Refresh));
 		var close = new Button { Text = "Cerrar", Width = 90, Height = 28 };
 		close.Click += (s, e) => Close();
-		buttons.Controls.AddRange(new Control[] { _explode, _select, _locate, _delete, _refresh, close });
+		SetupButton(_addPdf, "Agregar PDF…", AddPdfFiles);
+		buttons.Controls.AddRange(_mode == FinderMode.Pdf
+			? new Control[] { _addPdf, _explode, _select, _locate, _delete, _refresh, close }
+			: new Control[] { _explode, _select, _locate, _delete, _refresh, close });
 		_status.Dock = DockStyle.Fill;
 		_status.TextAlign = ContentAlignment.MiddleLeft;
 		bottom.Controls.Add(_status);
@@ -178,7 +186,7 @@ internal sealed class DwgFinderForm : Form
 			return;
 		}
 
-		using (var dialog = new ExplodeOptionsDialog(selected.Count))
+		using (var dialog = new ExplodeOptionsDialog(selected.Count, _mode == FinderMode.Pdf))
 		{
 			if (dialog.ShowDialog(this) != DialogResult.OK)
 			{
@@ -190,6 +198,57 @@ internal sealed class DwgFinderForm : Form
 		}
 
 		Run(DwgFinderAction.Explode);
+	}
+
+	/// <summary>Importa archivos PDF externos (todas sus páginas, una vista de dibujo por página).</summary>
+	private void AddPdfFiles()
+	{
+		List<string> files;
+		using (var dialog = new OpenFileDialog
+		{
+			Title = "Selecciona los PDF a importar",
+			Filter = "Archivos PDF (*.pdf)|*.pdf",
+			Multiselect = true,
+			CheckFileExists = true
+		})
+		{
+			if (dialog.ShowDialog(this) != DialogResult.OK || dialog.FileNames.Length == 0)
+			{
+				return;
+			}
+
+			files = dialog.FileNames.ToList();
+		}
+
+		int pageCount = 0;
+		int detected = 0;
+		if (files.Count == 1)
+		{
+			try
+			{
+				pageCount = RevitDwgExploder.Pdf.PdfPageReader.CountPages(files[0]);
+				detected = RevitDwgExploder.Pdf.PdfExploder.DetectScale(RevitDwgExploder.Pdf.PdfPageReader.Read(files[0], 1));
+			}
+			catch (Exception ex)
+			{
+				MessageBox.Show(this, "No se pudo leer el PDF:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+				return;
+			}
+		}
+
+		string label = files.Count == 1 ? System.IO.Path.GetFileName(files[0]) : $"{files.Count} archivos PDF";
+		using (var options = new PdfImportDialog(label, 0, detected, null))
+		{
+			if (options.ShowDialog(this) != DialogResult.OK)
+			{
+				return;
+			}
+
+			_handler.ImportScale = options.DrawingScale;
+		}
+
+		_handler.FilePaths = files;
+		Run(DwgFinderAction.ImportFiles);
 	}
 
 	private static void SetupButton(Button button, string text, Action action)
@@ -312,7 +371,7 @@ internal sealed class DwgFinderForm : Form
 	private void Run(DwgFinderAction action)
 	{
 		List<DwgFinderEntry> selected = SelectedEntries();
-		if (action != DwgFinderAction.Refresh && selected.Count == 0)
+		if (action != DwgFinderAction.Refresh && action != DwgFinderAction.ImportFiles && selected.Count == 0)
 		{
 			return;
 		}
@@ -333,6 +392,7 @@ internal sealed class DwgFinderForm : Form
 	{
 		UseWaitCursor = busy;
 		_refresh.Enabled = !busy;
+		_addPdf.Enabled = !busy;
 		if (busy)
 		{
 			_explode.Enabled = _select.Enabled = _locate.Enabled = _delete.Enabled = false;

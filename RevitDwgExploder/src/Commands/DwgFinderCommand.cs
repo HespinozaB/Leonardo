@@ -43,7 +43,15 @@ internal enum DwgFinderAction
 	Select,
 	Locate,
 	Delete,
-	Explode
+	Explode,
+	ImportFiles
+}
+
+/// <summary>Qué lista la ventana: los CAD (DWG) o los PDF del modelo.</summary>
+internal enum FinderMode
+{
+	Dwg,
+	Pdf
 }
 
 /// <summary>
@@ -53,6 +61,13 @@ internal enum DwgFinderAction
 internal sealed class DwgFinderHandler : IExternalEventHandler
 {
 	public DwgFinderAction Action;
+
+	public FinderMode Mode = FinderMode.Dwg;
+
+	/// <summary>Agregar PDF: archivos a importar, páginas ("" = todas) y escala (0 = detectar en cada PDF).</summary>
+	public List<string> FilePaths = new List<string>();
+
+	public int ImportScale;
 
 	public List<long> Ids = new List<long>();
 
@@ -82,7 +97,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		string message = null;
 		if (Action != DwgFinderAction.Refresh && !string.IsNullOrEmpty(DocumentTitle) && DocumentTitle != doc.Title)
 		{
-			OnResult?.Invoke(Collect(doc), doc.Title, "El modelo activo cambió: la lista se actualizó, vuelve a elegir los DWG.");
+			OnResult?.Invoke(CollectFor(doc), doc.Title, "El modelo activo cambió: la lista se actualizó, vuelve a elegir los archivos.");
 			return;
 		}
 
@@ -92,7 +107,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			switch (Action)
 			{
 				case DwgFinderAction.Select:
-					uiDoc.Selection.SetElementIds(ids.Where(id => doc.GetElement(id) is ImportInstance).ToList());
+					uiDoc.Selection.SetElementIds(ids.Where(id => IsListedInstance(doc.GetElement(id))).ToList());
 					message = $"{ids.Count} elemento(s) seleccionado(s).";
 					break;
 				case DwgFinderAction.Locate:
@@ -102,7 +117,12 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 					message = Delete(doc, ids, DeleteFiles);
 					break;
 				case DwgFinderAction.Explode:
-					message = Explode(app, uiDoc, ids, AdjustScale, DeleteOriginals);
+					message = Mode == FinderMode.Pdf
+						? PdfFinder.Explode(app, uiDoc, ids, DeleteOriginals)
+						: Explode(app, uiDoc, ids, AdjustScale, DeleteOriginals);
+					break;
+				case DwgFinderAction.ImportFiles:
+					message = PdfFinder.ImportFiles(app, uiDoc, FilePaths, ImportScale);
 					break;
 				case DwgFinderAction.Refresh:
 					// Redibuja la vista activa para que desaparezca lo eliminado.
@@ -115,10 +135,15 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			message = "No se pudo completar la acción: " + ex.Message;
 		}
 
-		OnResult?.Invoke(Collect(doc), doc.Title, message);
+		OnResult?.Invoke(CollectFor(doc), doc.Title, message);
 	}
 
-	public string GetName() => "EMASY - Explotar Varios DWG's";
+	public string GetName() => Mode == FinderMode.Pdf ? "EMASY - Explotar Varios PDF's" : "EMASY - Explotar Varios DWG's";
+
+	private List<DwgFinderEntry> CollectFor(Document doc) => Mode == FinderMode.Pdf ? PdfFinder.Collect(doc) : Collect(doc);
+
+	/// <summary>Instancias que lista la ventana (CAD o imágenes PDF).</summary>
+	internal static bool IsListedInstance(Element element) => element is ImportInstance || element is ImageInstance;
 
 	/// <summary>
 	/// Explota en lote los CAD elegidos. Cada CAD se explota en su vista: la propia si es "solo en su vista";
@@ -244,7 +269,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 	private static string Locate(UIDocument uiDoc, List<ElementId> ids)
 	{
 		Document doc = uiDoc.Document;
-		List<ElementId> instances = ids.Where(id => doc.GetElement(id) is ImportInstance).ToList();
+		List<ElementId> instances = ids.Where(id => IsListedInstance(doc.GetElement(id))).ToList();
 		if (instances.Count == 0)
 		{
 			return "Los archivos sin instancias no tienen ubicación en el modelo.";
@@ -280,7 +305,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		return $"{instances.Count} elemento(s) ubicado(s) y seleccionado(s).";
 	}
 
-	private static string Delete(Document doc, List<ElementId> ids, bool deleteFiles)
+	internal static string Delete(Document doc, List<ElementId> ids, bool deleteFiles)
 	{
 		if (ids.Count == 0)
 		{
@@ -296,12 +321,12 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			foreach (ElementId id in ids)
 			{
 				Element element = doc.GetElement(id);
-				if (element is ImportInstance instance)
+				if (IsListedInstance(element))
 				{
-					typeIds.Add(instance.GetTypeId());
-					if (instance.Pinned)
+					typeIds.Add(element.GetTypeId());
+					if (element.Pinned)
 					{
-						instance.Pinned = false;
+						element.Pinned = false;
 					}
 
 					toDelete.Add(id);
@@ -323,7 +348,8 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			{
 				var remainingTypes = new HashSet<ElementId>(new FilteredElementCollector(doc)
 					.OfClass(typeof(ImportInstance))
-					.Select(e => e.GetTypeId()));
+					.Select(e => e.GetTypeId())
+					.Concat(new FilteredElementCollector(doc).OfClass(typeof(ImageInstance)).Select(e => e.GetTypeId())));
 				List<ElementId> orphanTypes = typeIds.Where(t => doc.GetElement(t) != null && !remainingTypes.Contains(t)).ToList();
 				if (orphanTypes.Count > 0)
 				{
@@ -558,29 +584,33 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 [Regeneration(RegenerationOption.Manual)]
 public class DwgFinderCommand : IExternalCommand
 {
-	private static DwgFinderForm _form;
+	private static readonly Dictionary<FinderMode, DwgFinderForm> Forms = new Dictionary<FinderMode, DwgFinderForm>();
 
-	public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+	public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements) =>
+		Show(commandData.Application, FinderMode.Dwg);
+
+	/// <summary>Abre (o trae al frente) la ventana de lista en el modo indicado.</summary>
+	internal static Result Show(UIApplication app, FinderMode mode)
 	{
-		UIApplication app = commandData.Application;
 		Document doc = app.ActiveUIDocument?.Document;
 		if (doc == null)
 		{
 			return Result.Cancelled;
 		}
 
-		if (_form != null && !_form.IsDisposed)
+		if (Forms.TryGetValue(mode, out DwgFinderForm existing) && !existing.IsDisposed)
 		{
-			_form.Activate();
-			_form.RequestRefresh();
+			existing.Activate();
+			existing.RequestRefresh();
 			return Result.Succeeded;
 		}
 
-		var handler = new DwgFinderHandler();
+		var handler = new DwgFinderHandler { Mode = mode };
 		var externalEvent = ExternalEvent.Create(handler);
-		_form = new DwgFinderForm(handler, externalEvent);
-		_form.SetEntries(DwgFinderHandler.Collect(doc), doc.Title, null);
-		_form.Show(new WindowHandle(app.MainWindowHandle));
+		var form = new DwgFinderForm(handler, externalEvent, mode);
+		form.SetEntries(mode == FinderMode.Pdf ? PdfFinder.Collect(doc) : DwgFinderHandler.Collect(doc), doc.Title, null);
+		form.Show(new WindowHandle(app.MainWindowHandle));
+		Forms[mode] = form;
 		return Result.Succeeded;
 	}
 
@@ -593,6 +623,15 @@ public class DwgFinderCommand : IExternalCommand
 
 		public IntPtr Handle { get; }
 	}
+}
+
+/// <summary>"Explotar Varios PDF's": la misma ventana de lista, con los PDF del modelo.</summary>
+[Transaction(TransactionMode.Manual)]
+[Regeneration(RegenerationOption.Manual)]
+public class PdfFinderCommand : IExternalCommand
+{
+	public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements) =>
+		DwgFinderCommand.Show(commandData.Application, FinderMode.Pdf);
 }
 
 /// <summary>El Buscador está disponible siempre que haya un modelo abierto.</summary>

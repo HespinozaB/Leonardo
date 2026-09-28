@@ -35,6 +35,28 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.13
+
+### Nuevo grupo PDF Tools
+- **Explotar PDF Actual**: explota los PDF insertados en la vista actual (o los seleccionados) en su lugar, en la
+  misma posición y tamaño que la imagen. Si no hay ninguno, permite elegir un archivo PDF e importarlo:
+  páginas (todas o un rango), escala del dibujo (se detecta sola si el PDF dice "ESC 1:50", "ESCALA 1/100"…) y
+  destino (una **vista de dibujo nueva por página**, a tamaño real y con la escala del dibujo, o la vista actual).
+- **Explotar Varios PDF's**: la misma ventana de lista que para los DWG, con los PDF del modelo (archivo, página,
+  vista, estado del archivo) y los botones **Agregar PDF…** (importar varios archivos a la vez), **Explotar…**,
+  Seleccionar, Ubicar, Eliminar y Actualizar.
+- Qué se convierte (lectura con [PdfPig](https://github.com/UglyToad/PdfPig), Apache 2.0):
+  - trazos → Detail Lines con Line Styles `PDF R-G-B 0.25mm` (color, grosor → pluma, patrón de trazos del PDF);
+    los círculos y arcos se detectan y se crean como arcos reales; el resto de curvas, como splines;
+  - rellenos → Filled Regions sólidas con su color (se ignora el fondo blanco de la página);
+  - textos → TextNotes (líneas de texto agrupadas, tamaño, fuente, negrita y rotación).
+  - Las imágenes raster dentro del PDF (y los PDF escaneados) no son dibujo vectorial y no se convierten.
+- Si el PDF insertado ya no está en su ruta, se pide el archivo.
+
+### Técnico
+- `App` resuelve las DLL de apoyo (System.Memory…) desde la carpeta del addin, ya que ACadSharp y PdfPig
+  se compilaron contra versiones distintas.
+
 ## Cambios de la versión 1.12
 
 ### Explotar más rápido y sin el aviso "contornos demasiado grandes"

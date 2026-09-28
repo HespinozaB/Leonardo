@@ -10,9 +10,9 @@ internal sealed class ExplodeOptionsDialog : Form
 
 	private readonly CheckBox _deleteOriginals = new CheckBox();
 
-	public ExplodeOptionsDialog(int count)
+	public ExplodeOptionsDialog(int count, bool pdf = false)
 	{
-		Text = "EMASY · Explotar Varios DWG's";
+		Text = pdf ? "EMASY · Explotar Varios PDF's" : "EMASY · Explotar Varios DWG's";
 		FormBorderStyle = FormBorderStyle.FixedDialog;
 		MaximizeBox = false;
 		MinimizeBox = false;
@@ -23,15 +23,18 @@ internal sealed class ExplodeOptionsDialog : Form
 
 		var title = new Label
 		{
-			Text = $"Explotar {count} DWG",
+			Text = $"Explotar {count} {(pdf ? "PDF" : "DWG")}",
 			Font = new Font("Segoe UI", 11f, FontStyle.Bold),
 			Location = new Point(16, 14),
 			AutoSize = true
 		};
 		var info = new Label
 		{
-			Text = "Cada DWG se explota en su vista (la propia si está \"solo en su vista\"; si es de modelo, la vista " +
-				"activa si lo muestra o una planta de su nivel). Se crea una transacción por vista.",
+			Text = pdf
+				? "Cada PDF se explota en su vista, en la misma posición y tamaño que la imagen: sus trazos, rellenos y " +
+					"textos se convierten en líneas de detalle, Filled Regions y TextNotes."
+				: "Cada DWG se explota en su vista (la propia si está \"solo en su vista\"; si es de modelo, la vista " +
+					"activa si lo muestra o una planta de su nivel). Se crea una transacción por vista.",
 			Location = new Point(18, 44),
 			Size = new Size(435, 48)
 		};
@@ -40,9 +43,10 @@ internal sealed class ExplodeOptionsDialog : Form
 		_adjustScale.Checked = true;
 		_adjustScale.Location = new Point(18, 100);
 		_adjustScale.AutoSize = true;
+		_adjustScale.Visible = !pdf;
 
-		_deleteOriginals.Text = "Eliminar los DWG originales después de explotarlos";
-		_deleteOriginals.Location = new Point(18, 128);
+		_deleteOriginals.Text = pdf ? "Eliminar los PDF originales después de explotarlos" : "Eliminar los DWG originales después de explotarlos";
+		_deleteOriginals.Location = new Point(18, pdf ? 100 : 128);
 		_deleteOriginals.AutoSize = true;
 
 		var ok = new Button { Text = "Explotar", DialogResult = DialogResult.OK, Location = new Point(270, 186), Size = new Size(90, 30) };

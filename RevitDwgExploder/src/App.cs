@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -13,8 +14,37 @@ public class App : IExternalApplication
 
 	private const string PanelName = "DWG Tools";
 
+	private static readonly string AddinFolder = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty;
+
+	/// <summary>
+	/// Si Revit no encuentra la versión exacta de una DLL de apoyo (System.Memory, System.Buffers…), se usa la que
+	/// está en la carpeta del addin: ACadSharp y PdfPig se compilaron contra versiones distintas y los addins
+	/// no tienen "binding redirects".
+	/// </summary>
+	private static Assembly ResolveFromAddinFolder(object sender, ResolveEventArgs args)
+	{
+		try
+		{
+			string name = new AssemblyName(args.Name).Name;
+			Assembly loaded = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == name);
+			if (loaded != null)
+			{
+				return loaded;
+			}
+
+			string path = Path.Combine(AddinFolder, name + ".dll");
+			return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
 	public Result OnStartup(UIControlledApplication application)
 	{
+		AppDomain.CurrentDomain.AssemblyResolve += ResolveFromAddinFolder;
+
 		try
 		{
 			application.CreateRibbonTab(TabName);
@@ -53,11 +83,39 @@ public class App : IExternalApplication
 			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
 		};
 		panel.AddItem(finderData);
+
+		RibbonPanel pdfPanel = application.CreateRibbonPanel(TabName, "PDF Tools");
+		pdfPanel.AddItem(new PushButtonData(
+			"ExplodePdfCommand",
+			"Explotar" + Environment.NewLine + "PDF Actual",
+			assemblyPath,
+			"RevitDwgExploder.Commands.ExplodePdfCommand")
+		{
+			ToolTip = "Explota los PDF insertados en la vista actual (o los seleccionados) en su lugar: trazos, rellenos y textos " +
+				"se convierten en Detail Lines, Filled Regions y TextNotes nativos. Si no hay ninguno, permite elegir un archivo PDF " +
+				"e importarlo (una vista de dibujo por página, a la escala del dibujo).",
+			LargeImage = LoadIcon("RevitDwgExploder.pdf32.png"),
+			Image = LoadIcon("RevitDwgExploder.pdf16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Commands.ExplodePdfAvailability"
+		});
+		pdfPanel.AddItem(new PushButtonData(
+			"PdfFinderCommand",
+			"Explotar" + Environment.NewLine + "Varios PDF's",
+			assemblyPath,
+			"RevitDwgExploder.Commands.PdfFinderCommand")
+		{
+			ToolTip = "Lista todos los PDF del modelo y permite explotar varios a la vez (cada uno en su vista), importar archivos " +
+				"PDF externos, seleccionarlos, ubicarlos o eliminarlos.",
+			LargeImage = LoadIcon("RevitDwgExploder.pdffinder32.png"),
+			Image = LoadIcon("RevitDwgExploder.pdffinder16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
+		});
 		return Result.Succeeded;
 	}
 
 	public Result OnShutdown(UIControlledApplication application)
 	{
+		AppDomain.CurrentDomain.AssemblyResolve -= ResolveFromAddinFolder;
 		Commands.DwgTextImageOcr.DisposeEngine();
 		return Result.Succeeded;
 	}

@@ -15,7 +15,7 @@ namespace RevitDwgExploder.Commands;
 public class ExplodeDwgCommand : IExternalCommand
 {
 	/// <summary>Tamaño de texto mínimo que admite Revit: 0.2526 mm en papel.</summary>
-	private const double MinTextSizeFeet = 0.2526 / 304.8;
+	internal const double MinTextSizeFeet = 0.2526 / 304.8;
 
 	private const double MaxTextSizeFeet = 1.0;
 
@@ -372,7 +372,7 @@ public class ExplodeDwgCommand : IExternalCommand
 
 	// ---------------------------------------------------------------- Textos
 
-	private static bool CreateTextNote(Document doc, View view, DwgTextImporter.DwgTextEntry entry, TextNoteTypeCache types)
+	internal static bool CreateTextNote(Document doc, View view, DwgTextImporter.DwgTextEntry entry, TextNoteTypeCache types)
 	{
 		if (string.IsNullOrWhiteSpace(entry.Text) || entry.Position == null)
 		{
@@ -535,7 +535,7 @@ public class ExplodeDwgCommand : IExternalCommand
 	/// (el colector de tipos existentes se ejecuta una sola vez). Todos quedan con fondo transparente,
 	/// sin borde y con desfase de directriz/borde 0, para que no tapen las líneas ni agranden el recuadro.
 	/// </summary>
-	private sealed class TextNoteTypeCache
+	internal sealed class TextNoteTypeCache
 	{
 		private readonly Document _doc;
 
@@ -1358,7 +1358,7 @@ public class ExplodeDwgCommand : IExternalCommand
 	/// Elimina las advertencias (p.ej. "línea ligeramente fuera de eje") para que Revit no muestre
 	/// un diálogo por cada una y la confirmación sea mucho más rápida, y resuelve los errores puntuales.
 	/// </summary>
-	private sealed class WarningSwallower : IFailuresPreprocessor
+	internal sealed class WarningSwallower : IFailuresPreprocessor
 	{
 		public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
 		{
