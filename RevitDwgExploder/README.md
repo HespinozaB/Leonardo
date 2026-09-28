@@ -35,6 +35,15 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.10
+
+### Buscador DWG's más rápido
+- La columna **Vista** se calculaba revisando la visibilidad de **cada vista del modelo** (y se repetía en
+  cada Actualizar / Eliminar), lo que en modelos grandes tardaba mucho. Ahora se obtiene sin calcular
+  visibilidades: la vista propia del CAD si es "solo en su vista", o las **plantas de su nivel** si es de
+  modelo. La lista sale casi al instante aunque el modelo tenga cientos de vistas.
+- **Ubicar** solo comprueba las plantas del nivel del CAD en lugar de recorrer todas las vistas.
+
 ## Cambios de la versión 1.9
 
 ### Colores de los rellenos (equipos que salían en blanco)

@@ -207,8 +207,9 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 	{
 		var result = new List<DwgFinderEntry>();
 		var usedTypes = new HashSet<long>();
-		Dictionary<ElementId, List<string>> viewsByInstance = ViewsByInstance(doc);
-		foreach (ImportInstance instance in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)).Cast<ImportInstance>())
+		List<ImportInstance> instances = new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)).Cast<ImportInstance>().ToList();
+		Dictionary<ElementId, List<string>> viewsByInstance = ViewsByInstance(doc, instances);
+		foreach (ImportInstance instance in instances)
 		{
 			Element type = doc.GetElement(instance.GetTypeId());
 			usedTypes.Add(instance.GetTypeId().Value);
@@ -222,7 +223,7 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 				Location = LocationOf(doc, instance),
 				Views = viewsByInstance.TryGetValue(instance.Id, out List<string> views) && views.Count > 0
 					? string.Join(", ", views)
-					: "(no visible en ninguna vista)",
+					: "(sin planta en su nivel)",
 				Level = LevelOf(doc, instance),
 				Status = StatusOf(type, instance.IsLinked),
 				Pinned = instance.Pinned,
@@ -261,47 +262,87 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		instance.OwnerViewId != ElementId.InvalidElementId ? "Solo en su vista" : "Modelo";
 
 	/// <summary>
-	/// Vistas donde se ve cada CAD. Un CAD "solo vista actual" pertenece a una vista; uno de modelo puede
-	/// verse en varias (plantas del mismo nivel, secciones, 3D…), así que se revisa cada vista gráfica.
+	/// Vistas de cada CAD, sin calcular visibilidades (eso obligaba a Revit a procesar cada vista del modelo y
+	/// era lo que hacía lento al buscador): un CAD "solo vista actual" tiene su vista propia, y uno de modelo se
+	/// muestra en las plantas de su nivel. Solo se leen datos de las vistas, así que es casi instantáneo.
 	/// </summary>
-	private static Dictionary<ElementId, List<string>> ViewsByInstance(Document doc)
+	private static Dictionary<ElementId, List<string>> ViewsByInstance(Document doc, List<ImportInstance> instances)
 	{
 		var result = new Dictionary<ElementId, List<string>>();
-		IEnumerable<View> views = new FilteredElementCollector(doc)
-			.OfClass(typeof(View))
-			.Cast<View>()
-			.Where(v => !v.IsTemplate && v.CanBePrinted && v.ViewType != ViewType.Schedule && v.ViewType != ViewType.DrawingSheet)
-			.OrderBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase);
-		foreach (View view in views)
+		if (instances.Count == 0)
 		{
-			try
-			{
-				foreach (ElementId id in new FilteredElementCollector(doc, view.Id).OfClass(typeof(ImportInstance)).ToElementIds())
-				{
-					if (!result.TryGetValue(id, out List<string> names))
-					{
-						names = new List<string>();
-						result[id] = names;
-					}
+			return result;
+		}
 
-					names.Add(view.Name);
+		Dictionary<ElementId, List<ViewPlan>> plansByLevel = PlansByLevel(doc);
+		foreach (ImportInstance instance in instances)
+		{
+			var names = new List<string>();
+			if (instance.OwnerViewId != ElementId.InvalidElementId)
+			{
+				if (doc.GetElement(instance.OwnerViewId) is View owner)
+				{
+					names.Add(owner.Name);
 				}
 			}
-			catch (Exception)
+			else if (plansByLevel.TryGetValue(LevelIdOf(instance), out List<ViewPlan> plans))
 			{
+				names.AddRange(plans.Select(p => p.Name));
 			}
+
+			result[instance.Id] = names;
 		}
 
 		return result;
 	}
 
-	/// <summary>Primera vista (distinta de la activa) donde se ven los CAD indicados.</summary>
+	/// <summary>Plantas (no plantillas) agrupadas por su nivel, ordenadas por nombre.</summary>
+	private static Dictionary<ElementId, List<ViewPlan>> PlansByLevel(Document doc)
+	{
+		return new FilteredElementCollector(doc)
+			.OfClass(typeof(ViewPlan))
+			.Cast<ViewPlan>()
+			.Where(v => !v.IsTemplate && v.GenLevel != null)
+			.GroupBy(v => v.GenLevel.Id)
+			.ToDictionary(
+				g => g.Key,
+				g => g.OrderBy(v => v.ViewType == ViewType.FloorPlan ? 0 : 1).ThenBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase).ToList());
+	}
+
+	private static ElementId LevelIdOf(ImportInstance instance)
+	{
+		try
+		{
+			ElementId levelId = instance.LevelId;
+			if (levelId == ElementId.InvalidElementId)
+			{
+				levelId = instance.get_Parameter(BuiltInParameter.IMPORT_BASE_LEVEL)?.AsElementId() ?? ElementId.InvalidElementId;
+			}
+
+			return levelId;
+		}
+		catch (Exception)
+		{
+			return ElementId.InvalidElementId;
+		}
+	}
+
+	/// <summary>
+	/// Una vista (distinta de la activa) donde se vean los CAD: se prueban solo las plantas de su nivel,
+	/// comprobando la visibilidad de pocas vistas en lugar de recorrer todo el modelo.
+	/// </summary>
 	private static View FindViewShowing(Document doc, List<ElementId> ids, ElementId skip)
 	{
 		var wanted = new HashSet<ElementId>(ids);
-		foreach (View view in new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()
-			.Where(v => !v.IsTemplate && v.CanBePrinted && v.Id != skip && v.ViewType != ViewType.Schedule && v.ViewType != ViewType.DrawingSheet)
-			.OrderBy(v => v.ViewType == ViewType.FloorPlan ? 0 : v.ViewType == ViewType.ThreeD ? 2 : 1))
+		Dictionary<ElementId, List<ViewPlan>> plansByLevel = PlansByLevel(doc);
+		List<ViewPlan> candidates = ids
+			.Select(id => doc.GetElement(id) as ImportInstance)
+			.Where(i => i != null)
+			.SelectMany(i => plansByLevel.TryGetValue(LevelIdOf(i), out List<ViewPlan> plans) ? plans : new List<ViewPlan>())
+			.Where(v => v.Id != skip)
+			.Distinct()
+			.ToList();
+		foreach (ViewPlan view in candidates)
 		{
 			try
 			{
@@ -315,7 +356,8 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 			}
 		}
 
-		return null;
+		// Si ninguna comprobación confirmó la visibilidad (p.ej. el CAD está oculto), la primera planta de su nivel.
+		return candidates.FirstOrDefault();
 	}
 
 	private static string LevelOf(Document doc, ImportInstance instance)
