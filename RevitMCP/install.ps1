@@ -37,7 +37,7 @@ $venv = Join-Path $installDir 'venv'
 if ($python -eq 'py') { & py -3 -m venv $venv } else { & python -m venv $venv }
 $venvPython = Join-Path $venv 'Scripts\python.exe'
 & $venvPython -m pip install --upgrade pip --quiet
-& $venvPython -m pip install 'mcp>=1.2.0' --quiet
+& $venvPython -m pip install 'mcp>=1.2,<2' --quiet
 Write-Host "[OK] Servidor MCP instalado en $installDir" -ForegroundColor Green
 
 # ---------------------------------------------------------------- 3a. Claude Desktop

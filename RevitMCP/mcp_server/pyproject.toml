@@ -3,7 +3,7 @@ name = "revit-mcp-server"
 version = "1.0.0"
 description = "Servidor MCP que conecta Claude con Revit 2024 a través del add-in RevitMCP"
 requires-python = ">=3.10"
-dependencies = ["mcp>=1.2.0"]
+dependencies = ["mcp>=1.2,<2"]
 
 [project.scripts]
 revit-mcp-server = "revit_mcp_server:main"

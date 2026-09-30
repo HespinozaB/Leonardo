@@ -29,7 +29,7 @@ jobs:
 
       - name: Comprobar servidor MCP
         run: |
-          python -m pip install --quiet "mcp>=1.2.0"
+          python -m pip install --quiet "mcp>=1.2,<2"
           python -c "import sys; sys.path.insert(0, 'mcp_server'); import revit_mcp_server as s; print('herramientas OK')"
 
       - name: Empaquetar
