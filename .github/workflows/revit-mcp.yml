@@ -1,0 +1,50 @@
+name: RevitMCP
+
+on:
+  push:
+    paths:
+      - 'RevitMCP/**'
+      - '.github/workflows/revit-mcp.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: RevitMCP
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compilar add-in (Revit 2024, net48)
+        run: dotnet build addin/RevitMCP.csproj -c Release
+
+      - name: Comprobar servidor MCP
+        run: |
+          python -m pip install --quiet "mcp>=1.2.0"
+          python -c "import sys; sys.path.insert(0, 'mcp_server'); import revit_mcp_server as s; print('herramientas OK')"
+
+      - name: Empaquetar
+        shell: pwsh
+        run: |
+          $pkg = 'dist/RevitMCP-2024'
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item addin/RevitMCP.addin $pkg
+          Copy-Item addin/bin/Release/RevitMCP-2024 $pkg -Recurse
+          Remove-Item "$pkg/RevitMCP-2024/*.pdb" -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path "$pkg/mcp_server" | Out-Null
+          Copy-Item mcp_server/revit_mcp_server.py, mcp_server/pyproject.toml "$pkg/mcp_server"
+          Copy-Item install.ps1, README.md $pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RevitMCP-2024
+          path: RevitMCP/dist/RevitMCP-2024
