@@ -99,6 +99,9 @@ internal sealed class PdfTextItem
 	public string FontName;
 
 	public bool Bold;
+
+	/// <summary>Factor de ancho del tipo de texto (1 = normal).</summary>
+	public double WidthFactor = 1.0;
 }
 
 /// <summary>Contenido de una página PDF listo para convertir en elementos de Revit.</summary>

@@ -36,6 +36,21 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.16
+
+### Explotar imágenes: textos del tamaño correcto y más rápido
+
+- **Tamaño de los textos**: se mide la altura real de las mayúsculas en la imagen (sin contar subrayados, paréntesis
+  ni acentos), así una etiqueta subrayada ya no sale enorme. Los textos de tamaño parecido comparten tamaño y negrita.
+- **Ancho**: cada texto lleva un factor de ancho (tipos "x0.85"…) para ocupar lo mismo que en la imagen: los textos de
+  fuentes estrechas ya no se salen de las tablas.
+- **Negrita** recalibrada (la leyenda en negrita sale en negrita y las etiquetas normales, normales).
+- **OCR**: imagen ampliada 2× (más rápido y lee mejor: ahora también C08, F05…); las letras negras gruesas ya no
+  se borran antes de leer (volvía "OTAS" en vez de "NOTAS"); se quita la "I" que el OCR lee en un marco pegado al
+  texto ("IDETALL"); "FOS" → "F05".
+- **Líneas**: se conserva el subrayado de las etiquetas (es parte de la línea de referencia); ya no quedan restos de
+  letras ni manchas grises en los textos ni en la vegetación.
+
 ## Cambios de la versión 1.15
 
 ### Explotar imágenes: resultado mucho más limpio

@@ -97,7 +97,7 @@ internal static class RasterExploder
 		List<RasterTextLine> texts = ReadTexts(width, height, argb, firstPass);
 
 		// 2ª pasada: sin los píxeles de los textos reconocidos (serían cientos de trazos cortos).
-		IEnumerable<PixelRect> ignore = texts.Select(t => new PixelRect(t.X1 - 2, t.Y1 - 2, t.X2 + 2, t.Y2 + 2));
+		IEnumerable<PixelRect> ignore = texts.Select(RasterText.EraseArea);
 		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore);
 		PdfDrawing drawing = ToDrawing(raster, texts);
 		return PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
@@ -130,8 +130,7 @@ internal static class RasterExploder
 			lines.AddRange(Accepted(DwgTextImageOcr.RecognizeRegions(cleanPath, scale, regions), height));
 			lines = RasterText.Merge(lines);
 
-			RasterText.DetectBold(lines, plain, width, height);
-			FitSizes(lines);
+			RasterText.FitTexts(lines, plain, width, height);
 			return lines;
 		}
 		catch (Exception)
@@ -164,31 +163,6 @@ internal static class RasterExploder
 			line.Text = RasterText.FixCodes(line.Text).Trim();
 			yield return line;
 		}
-	}
-
-	/// <summary>
-	/// Tamaño de letra de cada línea: el que hace que el texto en Arial ocupe el ancho leído (así no se sale de su
-	/// sitio), acotado por la altura de la caja; después se unifican los tamaños parecidos.
-	/// </summary>
-	private static void FitSizes(List<RasterTextLine> lines)
-	{
-		using var bitmap = new Bitmap(1, 1);
-		using Graphics g = Graphics.FromImage(bitmap);
-		using var regular = new Font("Arial", 100f, FontStyle.Regular, GraphicsUnit.Pixel);
-		using var bold = new Font("Arial", 100f, FontStyle.Bold, GraphicsUnit.Pixel);
-		foreach (RasterTextLine line in lines)
-		{
-			// Altura: de lo alto de las mayúsculas a la línea base ≈ 0.716 em en Arial.
-			double capHeight = Math.Max(1.0, Math.Min(line.BaselineY, line.Y2) - line.Y1);
-			double fromHeight = capHeight / 0.716;
-			double measured = g.MeasureString(line.Text, line.Bold ? bold : regular, PointF.Empty, StringFormat.GenericTypographic).Width;
-			double fromWidth = measured > 1.0 ? (line.X2 - line.X1) * 100.0 / measured : fromHeight;
-			line.EmPx = line.Text.Length >= 4
-				? Math.Max(fromHeight * 0.7, Math.Min(fromHeight * 1.3, fromWidth))
-				: fromHeight;
-		}
-
-		RasterText.UnifySizes(lines);
 	}
 
 	/// <summary>Explota una imagen insertada en Revit en su lugar (misma posición y tamaño).</summary>
@@ -307,11 +281,12 @@ internal static class RasterExploder
 			drawing.Texts.Add(new PdfTextItem
 			{
 				Text = text.Text,
-				Origin = new Pt(text.X1, h - Math.Min(text.BaselineY, text.Y2)),
+				Origin = new Pt(text.X1, h - text.BaselineY),
 				SizePt = text.EmPx,
 				Rotation = 0.0,
 				FontName = "Arial",
-				Bold = text.Bold
+				Bold = text.Bold,
+				WidthFactor = text.WidthFactor
 			});
 		}
 

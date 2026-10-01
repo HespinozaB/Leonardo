@@ -20,8 +20,14 @@ internal sealed class RasterTextLine
 
 	public float Confidence;
 
-	/// <summary>Tamaño de letra ("em") en píxeles, ajustado al ancho real del texto.</summary>
+	/// <summary>Tamaño de letra ("em") en píxeles, según la altura real de las mayúsculas.</summary>
 	public double EmPx;
+
+	/// <summary>Factor de ancho del tipo de texto para que el texto ocupe el ancho que tiene en la imagen.</summary>
+	public double WidthFactor = 1.0;
+
+	/// <summary>Caja que dio el OCR (antes de ajustarla a la tinta).</summary>
+	public PixelRect OcrBox;
 
 	public bool Bold;
 }
@@ -51,7 +57,9 @@ internal static class RasterText
 			int v = a < 128 ? 255 : (r * 299 + g * 587 + b * 114) / 1000;
 
 			// Los grises claros (rayados, vegetación, sombreados) se blanquean: el texto de un plano es oscuro.
-			gray[i] = clean && (v >= LightLimit || firstPass.Classes != null && firstPass.Classes[i] == 2) ? (byte)255 : (byte)v;
+			// Los rellenos de color o gris también (muestras de leyenda); los negros no: suelen ser letras gruesas.
+			bool lightFill = firstPass.Classes != null && firstPass.Classes[i] == 2 && v >= 90;
+			gray[i] = clean && (v >= LightLimit || lightFill) ? (byte)255 : (byte)v;
 		}
 
 		if (!clean)
@@ -222,7 +230,7 @@ internal static class RasterText
 		}
 
 		double median = ratios.OrderBy(r => r).ElementAt(ratios.Count / 2);
-		double limit = median >= 0.19 ? 0.15 : 0.19;
+		double limit = median >= 0.235 ? 0.18 : 0.235;
 		for (int k = 0; k < lines.Count; k++)
 		{
 			lines[k].Bold = ratios[k] >= limit;
@@ -236,11 +244,11 @@ internal static class RasterText
 	public static int OcrScale(int w, int h)
 	{
 		int side = Math.Max(w, h);
-		return side <= 1400 ? 3 : side <= 3000 ? 2 : 1;
+		return side <= 3000 ? 2 : 1;
 	}
 
 	/// <summary>Largo a partir del cual una línea no es parte de una letra.</summary>
-	public static double LongLineLength(int w, int h) => Math.Max(30.0, (w + h) / 60.0);
+	public static double LongLineLength(int w, int h) => Math.Max(45.0, (w + h) / 40.0);
 
 	private static void EraseSegment(byte[] gray, int w, int h, double x1, double y1, double x2, double y2, double radius)
 	{
@@ -321,6 +329,16 @@ internal static class RasterText
 	/// </summary>
 	public static string FixCodes(string text)
 	{
+		// Etiqueta sola de 3 caracteres con forma de código (FOS → F05, COS → C05): letra + "O" + cifra o letra
+		// parecida a una cifra. Solo si es todo el texto, para no tocar palabras como "LOS".
+		string single = text.Trim().Trim('_', '|', '.', ',', ':', ';', '-');
+		if (single.Length == 3 && char.IsUpper(single[0]) && "O0Q".IndexOf(char.ToUpperInvariant(single[1])) >= 0
+			&& "0123456789OSZBIl".IndexOf(single[2]) >= 0)
+		{
+			char last = single[2] switch { 'O' => '0', 'S' => '5', 'Z' => '2', 'B' => '8', 'I' => '1', 'l' => '1', _ => single[2] };
+			return single[0] + "0" + last;
+		}
+
 		var words = text.Split(' ');
 		for (int k = 0; k < words.Length; k++)
 		{
@@ -344,7 +362,7 @@ internal static class RasterText
 
 	/// <summary>
 	/// Grosor relativo del trazo de las letras (ancho medio de las rachas horizontales de tinta / alto de la caja):
-	/// ~0.12 en Arial normal y ~0.2 en negrita.
+	/// con la caja ajustada a las mayúsculas, ~0.15-0.2 en texto normal y ~0.27-0.3 en negrita.
 	/// </summary>
 	public static double StrokeRatio(byte[] gray, int w, int h, RasterTextLine line)
 	{
@@ -405,28 +423,234 @@ internal static class RasterText
 	}
 
 	/// <summary>
-	/// Unifica los tamaños: los textos de tamaño parecido (±12 %) usan el mismo, así no aparece un tipo de texto por
-	/// línea. Se agrupa de menor a mayor y cada grupo toma su mediana.
+	/// Ajusta cada texto a lo que ocupa en la imagen:
+	/// <list type="number">
+	/// <item>caja ajustada a la tinta: la franja de filas más larga con tinta abundante (así no cuentan el subrayado,
+	/// los paréntesis ni los acentos) da la altura de las mayúsculas y la línea base;</item>
+	/// <item>tamaño = altura de mayúsculas / 0.716 (Arial); los tamaños parecidos (±15 %) se unifican y comparten
+	/// también la negrita (mayoría);</item>
+	/// <item>factor de ancho para que el texto en Arial mida lo mismo que en la imagen (fuentes estrechas).</item>
+	/// </list>
 	/// </summary>
-	public static void UnifySizes(List<RasterTextLine> lines)
+	public static void FitTexts(List<RasterTextLine> lines, byte[] gray, int w, int h)
 	{
-		List<RasterTextLine> sorted = lines.Where(l => l.EmPx > 0).OrderBy(l => l.EmPx).ToList();
+		foreach (RasterTextLine line in lines)
+		{
+			line.OcrBox = new PixelRect(line.X1, line.Y1, line.X2, line.Y2);
+			TightenBox(gray, w, h, line);
+		}
+
+		DetectBold(lines, gray, w, h);
+		foreach (RasterTextLine line in lines)
+		{
+			line.EmPx = Math.Max(1.0, line.BaselineY - line.Y1) / 0.716;
+		}
+
+		List<RasterTextLine> sorted = lines.OrderBy(l => l.EmPx).ToList();
 		int start = 0;
 		while (start < sorted.Count)
 		{
 			int end = start;
-			while (end + 1 < sorted.Count && sorted[end + 1].EmPx <= sorted[start].EmPx * 1.12)
+			while (end + 1 < sorted.Count && sorted[end + 1].EmPx <= sorted[start].EmPx * 1.15)
 			{
 				end++;
 			}
 
 			double median = sorted[(start + end) / 2].EmPx;
+			int boldCount = 0;
+			for (int k = start; k <= end; k++)
+			{
+				boldCount += sorted[k].Bold ? 1 : 0;
+			}
+
+			bool bold = boldCount * 2 > end - start + 1;
 			for (int k = start; k <= end; k++)
 			{
 				sorted[k].EmPx = median;
+				sorted[k].Bold = bold;
 			}
 
 			start = end + 1;
 		}
+
+		foreach (RasterTextLine line in lines)
+		{
+			double natural = ArialWidthEm(line.Text, line.Bold) * line.EmPx;
+			double factor = natural > 1.0 ? (line.X2 - line.X1) / natural : 1.0;
+			factor = Math.Max(0.6, Math.Min(1.2, factor));
+			line.WidthFactor = Math.Floor(factor * 20.0) / 20.0; // múltiplos de 0.05, hacia abajo: nunca más ancho
+		}
 	}
+
+	/// <summary>
+	/// Zona cuyos píxeles no se vectorizan: la caja del OCR por los lados y arriba, y por abajo la línea base (el
+	/// subrayado de una etiqueta es parte de su línea de referencia y se conserva), con margen si hay descendentes.
+	/// </summary>
+	public static PixelRect EraseArea(RasterTextLine t)
+	{
+		bool descenders = t.Text.IndexOfAny("gjpqy,;()".ToCharArray()) >= 0;
+		int bottom = t.Y2 + (descenders ? Math.Max(2, (int)((t.Y2 - t.Y1) * 0.3)) : 1);
+		return new PixelRect(Math.Min(t.X1, t.OcrBox.X1) - 2, Math.Min(t.Y1, t.OcrBox.Y1) - 3, Math.Max(t.X2, t.OcrBox.X2) + 2, bottom);
+	}
+
+	/// <summary>Ajusta la caja a la franja principal de tinta (mayúsculas) y fija la línea base en su borde inferior.</summary>
+	private static void TightenBox(byte[] gray, int w, int h, RasterTextLine line)
+	{
+		int x1 = Math.Max(0, line.X1), x2 = Math.Min(w - 1, line.X2 - 1);
+		int y1 = Math.Max(0, line.Y1 - 2), y2 = Math.Min(h - 1, line.Y2 + 1);
+		if (x2 <= x1 || y2 <= y1)
+		{
+			return;
+		}
+
+		int ink = InkLimit(gray, w, x1, y1, x2, y2);
+		var rows = new int[y2 - y1 + 1];
+		for (int y = y1; y <= y2; y++)
+		{
+			for (int x = x1; x <= x2; x++)
+			{
+				if (gray[y * w + x] < ink)
+				{
+					rows[y - y1]++;
+				}
+			}
+		}
+
+		int max = rows.Max();
+		if (max == 0)
+		{
+			return;
+		}
+
+		// Franja más larga de filas con al menos un 15 % de la tinta de la fila más cargada (un subrayado es una fila
+		// muy cargada pero aislada; los paréntesis y descendentes ponen poca tinta por fila).
+		int limit = Math.Max(1, (int)(max * 0.15));
+		int bestStart = -1, bestLength = 0;
+		for (int k = 0; k < rows.Length;)
+		{
+			if (rows[k] < limit)
+			{
+				k++;
+				continue;
+			}
+
+			int runStart = k;
+			while (k < rows.Length && rows[k] >= limit)
+			{
+				k++;
+			}
+
+			if (k - runStart > bestLength)
+			{
+				bestLength = k - runStart;
+				bestStart = runStart;
+			}
+		}
+
+		if (bestLength < 4)
+		{
+			return;
+		}
+
+		int top = y1 + bestStart, bottom = top + bestLength - 1;
+		int left = -1, right = -1;
+		for (int x = x1; x <= x2; x++)
+		{
+			for (int y = top; y <= bottom; y++)
+			{
+				if (gray[y * w + x] < ink)
+				{
+					if (left < 0)
+					{
+						left = x;
+					}
+
+					right = x;
+					break;
+				}
+			}
+		}
+
+		if (left < 0)
+		{
+			return;
+		}
+
+		// Una "I" o "|" inicial que en realidad es un marco o una línea vertical (más clara que el texto, a la izquierda
+		// de la primera letra, y que sigue por encima y por debajo del texto): se quita del texto.
+		if (line.Text.Length > 2 && "I|l[".IndexOf(line.Text[0]) >= 0)
+		{
+			for (int x = Math.Max(0, line.X1 - 2); x < left; x++)
+			{
+				if (InkAt(gray, w, h, x, top - 3, 200) && InkAt(gray, w, h, x, (top + bottom) / 2, 200) && InkAt(gray, w, h, x, bottom + 3, 200))
+				{
+					line.Text = line.Text.Substring(1).TrimStart();
+					break;
+				}
+			}
+		}
+
+		line.X1 = left;
+		line.X2 = right + 1;
+		line.Y1 = top;
+		line.Y2 = bottom + 1;
+		line.BaselineY = bottom + 1;
+	}
+
+	private static bool InkAt(byte[] gray, int w, int h, int x, int y, int ink) =>
+		x >= 0 && y >= 0 && x < w && y < h && (gray[y * w + x] < ink || (x > 0 && gray[y * w + x - 1] < ink) || (x < w - 1 && gray[y * w + x + 1] < ink));
+
+	/// <summary>Umbral de tinta dentro de una caja: a medio camino entre el píxel más oscuro y el papel.</summary>
+	private static int InkLimit(byte[] gray, int w, int x1, int y1, int x2, int y2)
+	{
+		int darkest = 255;
+		for (int y = y1; y <= y2; y++)
+		{
+			for (int x = x1; x <= x2; x++)
+			{
+				darkest = Math.Min(darkest, gray[y * w + x]);
+			}
+		}
+
+		return Math.Min(200, (darkest + 255) / 2);
+	}
+
+	/// <summary>Ancho de un texto en Arial, en unidades de "em" (métricas de Helvetica, idénticas a las de Arial).</summary>
+	public static double ArialWidthEm(string text, bool bold)
+	{
+		int[] widths = bold ? BoldWidths : RegularWidths;
+		double total = 0;
+		foreach (char raw in text.Normalize(NormalizationForm.FormD))
+		{
+			if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(raw) == System.Globalization.UnicodeCategory.NonSpacingMark)
+			{
+				continue;
+			}
+
+			total += raw >= 32 && raw <= 126 ? widths[raw - 32] : 556;
+		}
+
+		return total / 1000.0;
+	}
+
+	// Anchos (milésimas de em) de los caracteres 32..126.
+	private static readonly int[] RegularWidths =
+	{
+		278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+		556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+		1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+		667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+		333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+		556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584
+	};
+
+	private static readonly int[] BoldWidths =
+	{
+		278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+		556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+		975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+		667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+		333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+		611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584
+	};
 }

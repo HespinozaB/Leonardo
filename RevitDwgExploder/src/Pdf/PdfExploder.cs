@@ -134,7 +134,7 @@ internal static class PdfExploder
 				RotationRadians = text.Rotation,
 				AnchorH = TextAnchorH.Left,
 				AnchorV = TextAnchorV.Bottom,
-				WidthFactor = 1.0,
+				WidthFactor = text.WidthFactor > 0.0 ? text.WidthFactor : 1.0,
 				FontName = text.FontName,
 				Bold = text.Bold
 			};

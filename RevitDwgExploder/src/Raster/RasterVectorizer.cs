@@ -100,6 +100,7 @@ internal static class RasterVectorizer
 			cls[i] = luma[i] < threshold || colored[i] ? Ink : Background;
 		}
 
+		var ignored = new bool[n];
 		foreach (PixelRect rect in ignore ?? Enumerable.Empty<PixelRect>())
 		{
 			for (int y = Math.Max(0, rect.Y1); y <= Math.Min(height - 1, rect.Y2); y++)
@@ -107,6 +108,7 @@ internal static class RasterVectorizer
 				for (int x = Math.Max(0, rect.X1); x <= Math.Min(width - 1, rect.X2); x++)
 				{
 					cls[y * width + x] = Background;
+					ignored[y * width + x] = true;
 				}
 			}
 		}
@@ -114,7 +116,7 @@ internal static class RasterVectorizer
 		// Grosor del trazo en cada píxel de tinta (distancia al fondo).
 		int[] distance = DistanceToBackground(cls, width, height);
 
-		ExtractTints(drawing, cls, argb, luma, background, width, height);
+		ExtractTints(drawing, cls, ignored, argb, luma, background, width, height);
 		ExtractFills(drawing, cls, distance, argb, luma, threshold, width, height);
 		RemoveSpecks(cls, width, height, 6);
 		drawing.Classes = cls;
@@ -530,13 +532,13 @@ internal static class RasterVectorizer
 	/// Sombreados claros: zonas amplias de gris o color pálido algo más oscuras que el papel (quedan por encima del
 	/// umbral de tinta). Se convierten en rellenos debajo de todo; las líneas no se tocan.
 	/// </summary>
-	private static void ExtractTints(RasterDrawing drawing, byte[] cls, uint[] argb, byte[] luma, int background, int w, int h)
+	private static void ExtractTints(RasterDrawing drawing, byte[] cls, bool[] ignored, uint[] argb, byte[] luma, int background, int w, int h)
 	{
 		int n = w * h;
 		var mask = new byte[n];
 		for (int i = 0; i < n; i++)
 		{
-			mask[i] = cls[i] == Background && luma[i] >= 90 && luma[i] <= background - 12 ? Ink : Background;
+			mask[i] = cls[i] == Background && !ignored[i] && luma[i] >= 90 && luma[i] <= background - 12 ? Ink : Background;
 		}
 
 		int[] distance = DistanceToBackground(mask, w, h);
@@ -546,7 +548,7 @@ internal static class RasterVectorizer
 		int next = 0;
 		for (int start = 0; start < n; start++)
 		{
-			if (mask[start] != Ink || label[start] != 0 || distance[start] < 7)
+			if (mask[start] != Ink || label[start] != 0 || distance[start] < 9)
 			{
 				continue;
 			}
@@ -582,7 +584,7 @@ internal static class RasterVectorizer
 				}
 			}
 
-			if (part.Count < minArea || sumDistance / 3.0 / part.Count < 1.5)
+			if (part.Count < minArea || sumDistance / 3.0 / part.Count < 2.2)
 			{
 				continue;
 			}
