@@ -30,8 +30,8 @@ internal static class RasterExploder
 	/// <summary>Lado máximo (píxeles) con el que se vectoriza: imágenes más grandes se reducen (tiempo y memoria).</summary>
 	private const int MaxSide = 3200;
 
-	/// <summary>Grosores de pluma estándar (mm de papel) a los que se ajustan los trazos para no crear un estilo por píxel.</summary>
-	private static readonly double[] StandardWidthsMm = { 0.13, 0.18, 0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0 };
+	/// <summary>Grosores de pluma (mm de papel) de los trazos, del más fino al más grueso.</summary>
+	private static readonly double[] StandardWidthsMm = { 0.13, 0.18, 0.25, 0.35 };
 
 	/// <summary>Imagen de Revit que no es un PDF (los PDF tienen su propio comando).</summary>
 	public static bool IsRaster(ImageType type) => type != null && !PdfExploder.IsPdf(type);
@@ -87,36 +87,108 @@ internal static class RasterExploder
 		double feetPerPx = feetPerPixel * bitmap.Width / width;
 
 		uint[] argb;
-		List<DwgTextImageOcr.OcrLine> texts;
-		string tempFile = Path.Combine(Path.GetTempPath(), "EMASY_img_" + Guid.NewGuid().ToString("N") + ".png");
+		using (Bitmap work = Normalize(bitmap, width, height))
+		{
+			argb = Pixels(work);
+		}
+
+		// 1ª pasada: líneas y rellenos, para preparar las imágenes del OCR.
+		RasterDrawing firstPass = RasterVectorizer.Vectorize(width, height, argb, null);
+		List<RasterTextLine> texts = ReadTexts(width, height, argb, firstPass);
+
+		// 2ª pasada: sin los píxeles de los textos reconocidos (serían cientos de trazos cortos).
+		IEnumerable<PixelRect> ignore = texts.Select(t => new PixelRect(t.X1 - 2, t.Y1 - 2, t.X2 + 2, t.Y2 + 2));
+		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore);
+		PdfDrawing drawing = ToDrawing(raster, texts);
+		return PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
+	}
+
+	/// <summary>
+	/// OCR en tres lecturas: la imagen tal cual, la imagen "limpia" (sin rellenos, líneas largas ni grises claros) y,
+	/// una a una, las zonas con forma de texto que no se leyeron. Se queda la lectura más segura de cada zona.
+	/// </summary>
+	private static List<RasterTextLine> ReadTexts(int width, int height, uint[] argb, RasterDrawing firstPass)
+	{
+		int scale = RasterText.OcrScale(width, height);
+		string dir = Path.Combine(Path.GetTempPath(), "EMASY_img_" + Guid.NewGuid().ToString("N"));
+		var candidates = new List<RasterTextLine>();
 		try
 		{
-			using (Bitmap work = Normalize(bitmap, width, height))
-			{
-				argb = Pixels(work);
-				work.Save(tempFile, ImageFormat.Png);
-			}
+			Directory.CreateDirectory(dir);
+			string plainPath = Path.Combine(dir, "plain.pgm");
+			string cleanPath = Path.Combine(dir, "clean.pgm");
+			byte[] plain = RasterText.OcrGray(width, height, argb, firstPass, clean: false);
+			byte[] clean = RasterText.OcrGray(width, height, argb, firstPass, clean: true);
+			RasterText.WritePgm(plainPath, RasterText.Upscale(plain, width, height, scale, out int pw, out int ph), pw, ph);
+			RasterText.WritePgm(cleanPath, RasterText.Upscale(clean, width, height, scale, out int cw, out int ch), cw, ch);
 
-			texts = DwgTextImageOcr.RecognizeFile(tempFile)
-				.Where(t => t.Y2 - t.Y1 >= 6 && t.Y2 - t.Y1 <= height * 0.08)
-				.ToList();
+			candidates.AddRange(DwgTextImageOcr.RecognizeLines(plainPath, scale));
+			candidates.AddRange(DwgTextImageOcr.RecognizeLines(cleanPath, scale));
+			List<RasterTextLine> lines = RasterText.Merge(Accepted(candidates, height));
+
+			List<PixelRect> regions = RasterText.FindTextCandidates(clean, width, height, lines);
+			lines.AddRange(Accepted(DwgTextImageOcr.RecognizeRegions(cleanPath, scale, regions), height));
+			lines = RasterText.Merge(lines);
+
+			RasterText.DetectBold(lines, plain, width, height);
+			FitSizes(lines);
+			return lines;
+		}
+		catch (Exception)
+		{
+			return new List<RasterTextLine>();
 		}
 		finally
 		{
 			try
 			{
-				File.Delete(tempFile);
+				Directory.Delete(dir, recursive: true);
 			}
 			catch (Exception)
 			{
 			}
 		}
+	}
 
-		// Los píxeles de los textos reconocidos no se vectorizan (serían cientos de trazos cortos).
-		IEnumerable<PixelRect> ignore = texts.Select(t => new PixelRect(t.X1 - 2, t.Y1 - 2, t.X2 + 2, t.Y2 + 2));
-		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore);
-		PdfDrawing drawing = ToDrawing(raster, texts, feetPerPx, Math.Max(1, view.Scale));
-		return PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
+	/// <summary>Lecturas creíbles y de tamaño de texto, con los códigos de plano corregidos (co2 → C02).</summary>
+	private static IEnumerable<RasterTextLine> Accepted(IEnumerable<RasterTextLine> lines, int height)
+	{
+		foreach (RasterTextLine line in lines)
+		{
+			int boxHeight = line.Y2 - line.Y1;
+			if (boxHeight < 5 || boxHeight > height * 0.08 || !RasterText.IsPlausible(line.Text, line.Confidence))
+			{
+				continue;
+			}
+
+			line.Text = RasterText.FixCodes(line.Text).Trim();
+			yield return line;
+		}
+	}
+
+	/// <summary>
+	/// Tamaño de letra de cada línea: el que hace que el texto en Arial ocupe el ancho leído (así no se sale de su
+	/// sitio), acotado por la altura de la caja; después se unifican los tamaños parecidos.
+	/// </summary>
+	private static void FitSizes(List<RasterTextLine> lines)
+	{
+		using var bitmap = new Bitmap(1, 1);
+		using Graphics g = Graphics.FromImage(bitmap);
+		using var regular = new Font("Arial", 100f, FontStyle.Regular, GraphicsUnit.Pixel);
+		using var bold = new Font("Arial", 100f, FontStyle.Bold, GraphicsUnit.Pixel);
+		foreach (RasterTextLine line in lines)
+		{
+			// Altura: de lo alto de las mayúsculas a la línea base ≈ 0.716 em en Arial.
+			double capHeight = Math.Max(1.0, Math.Min(line.BaselineY, line.Y2) - line.Y1);
+			double fromHeight = capHeight / 0.716;
+			double measured = g.MeasureString(line.Text, line.Bold ? bold : regular, PointF.Empty, StringFormat.GenericTypographic).Width;
+			double fromWidth = measured > 1.0 ? (line.X2 - line.X1) * 100.0 / measured : fromHeight;
+			line.EmPx = line.Text.Length >= 4
+				? Math.Max(fromHeight * 0.7, Math.Min(fromHeight * 1.3, fromWidth))
+				: fromHeight;
+		}
+
+		RasterText.UnifySizes(lines);
 	}
 
 	/// <summary>Explota una imagen insertada en Revit en su lugar (misma posición y tamaño).</summary>
@@ -186,9 +258,9 @@ internal static class RasterExploder
 
 	/// <summary>
 	/// Pasa el resultado de la vectorización al modelo de dibujo de los PDF, en unidades de píxel (origen abajo a la
-	/// izquierda). Los grosores se expresan en puntos de papel según la escala de la vista, igual que en un PDF.
+	/// izquierda). Los grosores son relativos al trazo fino típico de la imagen (plumas de 0.13 a 0.35 mm).
 	/// </summary>
-	private static PdfDrawing ToDrawing(RasterDrawing raster, List<DwgTextImageOcr.OcrLine> texts, double feetPerPx, int viewScale)
+	private static PdfDrawing ToDrawing(RasterDrawing raster, List<RasterTextLine> texts)
 	{
 		double h = raster.Height;
 		var drawing = new PdfDrawing { Width = raster.Width, Height = raster.Height };
@@ -202,15 +274,23 @@ internal static class RasterExploder
 
 			var shape = new PdfFillShape { R = fill.R, G = fill.G, B = fill.B };
 			shape.Loops.Add(fill.Outline.Select(p => new Pt(p.X, h - p.Y)).ToList());
+			foreach (List<(double X, double Y)> hole in fill.Holes.Where(l => l.Count >= 3))
+			{
+				shape.Loops.Add(hole.Select(p => new Pt(p.X, h - p.Y)).ToList());
+			}
+
 			drawing.Fills.Add(shape);
 		}
 
+		// Grosores relativos: el trazo fino típico de la imagen es la pluma más fina y los demás se escalan respecto a
+		// él (con tope), así un plano escaneado a baja resolución no sale con líneas gruesas.
+		double baseThickness = TypicalThickness(raster.Lines);
 		var strokes = new Dictionary<PdfStrokeStyle, PdfStroke>();
 		foreach (RasterLine line in raster.Lines)
 		{
 			(byte r, byte g, byte b) = QuantizeColor(line.R, line.G, line.B);
-			double paperMm = Math.Max(1.0, line.Thickness) * feetPerPx * 304.8 / viewScale;
-			double widthMm = StandardWidthsMm.OrderBy(w => Math.Abs(w - paperMm)).First();
+			double ratio = line.Thickness / baseThickness;
+			double widthMm = ratio < 1.6 ? StandardWidthsMm[0] : ratio < 2.6 ? StandardWidthsMm[1] : ratio < 4.0 ? StandardWidthsMm[2] : StandardWidthsMm[3];
 			var style = new PdfStrokeStyle(r, g, b, widthMm * 72.0 / 25.4, string.Empty);
 			if (!strokes.TryGetValue(style, out PdfStroke stroke))
 			{
@@ -222,22 +302,40 @@ internal static class RasterExploder
 			stroke.Segments.Add(new PdfSegment { Start = new Pt(line.X1, h - line.Y1), End = new Pt(line.X2, h - line.Y2) });
 		}
 
-		foreach (DwgTextImageOcr.OcrLine text in texts)
+		foreach (RasterTextLine text in texts)
 		{
-			// La caja del OCR va de lo alto de las mayúsculas a lo bajo de los descendentes: ~0.75 es la altura de mayúsculas.
-			double boxHeight = text.Y2 - text.Y1;
 			drawing.Texts.Add(new PdfTextItem
 			{
 				Text = text.Text,
-				Origin = new Pt(text.X1, h - text.Y2 + boxHeight * 0.12),
-				SizePt = boxHeight * 0.75 / 0.72,
+				Origin = new Pt(text.X1, h - Math.Min(text.BaselineY, text.Y2)),
+				SizePt = text.EmPx,
 				Rotation = 0.0,
 				FontName = "Arial",
-				Bold = false
+				Bold = text.Bold
 			});
 		}
 
 		return drawing;
+	}
+
+	/// <summary>Grosor del trazo fino típico: percentil 30 de los grosores, ponderado por la longitud.</summary>
+	private static double TypicalThickness(List<RasterLine> lines)
+	{
+		var items = lines
+			.Select(l => (l.Thickness, Length: Math.Sqrt((l.X2 - l.X1) * (l.X2 - l.X1) + (l.Y2 - l.Y1) * (l.Y2 - l.Y1))))
+			.OrderBy(t => t.Thickness)
+			.ToList();
+		double total = items.Sum(t => t.Length), accumulated = 0;
+		foreach (var item in items)
+		{
+			accumulated += item.Length;
+			if (accumulated >= total * 0.3)
+			{
+				return Math.Max(1.0, item.Thickness);
+			}
+		}
+
+		return 1.0;
 	}
 
 	/// <summary>Agrupa colores parecidos (los promedios de píxeles varían un poco) para no crear un Line Style por tono.</summary>

@@ -36,6 +36,21 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.15
+
+### Explotar imágenes: resultado mucho más limpio
+
+- **Textos**: el OCR lee la imagen ampliada y en tres pasadas (imagen original, imagen sin líneas largas ni
+  rellenos —las etiquetas subrayadas por líneas de referencia ahora se leen— y, una a una, las zonas con forma de
+  texto que faltaban). Se descartan lecturas basura de rayados y vegetación ("zzzz"), se corrigen códigos (co2 → C02,
+  $05 → S05), el tamaño se ajusta al ancho real del texto (no se sale de su sitio), los tamaños parecidos se unifican,
+  se detecta la negrita y se usa la línea base del texto.
+- **Líneas**: grosor relativo al trazo fino de la imagen (plumas de 0.13 a 0.35 mm): ya no aparecen líneas gruesas ni
+  "puntos negros". Se eliminan las motas sueltas y los tramos minúsculos.
+- **Rellenos**: se detectan también las muestras de color pequeñas (leyendas), los rayados dentro de una mancha no la
+  cortan, los sombreados grises claros pasan a rellenos y los rellenos respetan sus huecos. Se corrigió el trazado
+  de contornos que cortaba algunas manchas a la mitad, y colores vecinos parecidos (gris/verde) ya no se mezclan.
+
 ## Cambios de la versión 1.14
 
 ### Nuevo grupo Imágenes Tools

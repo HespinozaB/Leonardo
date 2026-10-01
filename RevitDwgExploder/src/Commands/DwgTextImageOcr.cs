@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
+using RevitDwgExploder.Raster;
 using Tesseract;
 
 namespace RevitDwgExploder.Commands;
@@ -220,29 +221,13 @@ internal static class DwgTextImageOcr
 		return result;
 	}
 
-	/// <summary>Línea de texto reconocida en una imagen (píxeles, origen arriba a la izquierda).</summary>
-	internal readonly struct OcrLine
+	/// <summary>
+	/// Lee las líneas de texto de una imagen (ampliada <paramref name="scale"/> veces respecto a la original): las
+	/// coordenadas se devuelven en píxeles de la imagen original. Vacío si el OCR no está disponible.
+	/// </summary>
+	public static List<RasterTextLine> RecognizeLines(string imagePath, int scale)
 	{
-		public readonly string Text;
-		public readonly int X1;
-		public readonly int Y1;
-		public readonly int X2;
-		public readonly int Y2;
-
-		public OcrLine(string text, int x1, int y1, int x2, int y2)
-		{
-			Text = text;
-			X1 = x1;
-			Y1 = y1;
-			X2 = x2;
-			Y2 = y2;
-		}
-	}
-
-	/// <summary>Reconoce las líneas de texto de un archivo de imagen (vacío si el OCR no está disponible).</summary>
-	public static List<OcrLine> RecognizeFile(string imagePath)
-	{
-		var result = new List<OcrLine>();
+		var result = new List<RasterTextLine>();
 		TesseractEngine engine = GetEngine();
 		if (engine == null || !File.Exists(imagePath))
 		{
@@ -259,21 +244,90 @@ internal static class DwgTextImageOcr
 				iterator.Begin();
 				do
 				{
-					if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out Rect bounds)
-						|| iterator.GetConfidence(PageIteratorLevel.TextLine) < MinConfidencePercent)
+					if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out Rect bounds))
 					{
 						continue;
 					}
 
 					string text = CadTextCollector.CleanText(iterator.GetText(PageIteratorLevel.TextLine));
-					if (text.Length == 0 || !HasAlphanumeric.IsMatch(text))
+					if (text.Length == 0)
 					{
 						continue;
 					}
 
-					result.Add(new OcrLine(text, bounds.X1, bounds.Y1, bounds.X2, bounds.Y2));
+					double baseline = bounds.Y2;
+					if (iterator.TryGetBaseline(PageIteratorLevel.TextLine, out Rect line))
+					{
+						baseline = (line.Y1 + line.Y2) / 2.0;
+					}
+
+					result.Add(new RasterTextLine
+					{
+						Text = text,
+						Confidence = iterator.GetConfidence(PageIteratorLevel.TextLine),
+						X1 = bounds.X1 / scale,
+						Y1 = bounds.Y1 / scale,
+						X2 = (bounds.X2 + scale - 1) / scale,
+						Y2 = (bounds.Y2 + scale - 1) / scale,
+						BaselineY = baseline / scale
+					});
 				}
 				while (iterator.Next(PageIteratorLevel.TextLine));
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// Lee cada zona (en píxeles de la imagen original) como una sola línea de texto. Devuelve solo las zonas con
+	/// lectura; la caja es la de la zona.
+	/// </summary>
+	public static List<RasterTextLine> RecognizeRegions(string imagePath, int scale, IList<PixelRect> regions)
+	{
+		var result = new List<RasterTextLine>();
+		TesseractEngine engine = GetEngine();
+		if (engine == null || regions.Count == 0 || !File.Exists(imagePath))
+		{
+			return result;
+		}
+
+		try
+		{
+			lock (EngineLock)
+			{
+				using Pix image = Pix.LoadFromFile(imagePath);
+				foreach (PixelRect r in regions)
+				{
+					const int margin = 3;
+					int x1 = Math.Max(0, (r.X1 - margin) * scale), y1 = Math.Max(0, (r.Y1 - margin) * scale);
+					int x2 = Math.Min(image.Width - 1, (r.X2 + margin) * scale), y2 = Math.Min(image.Height - 1, (r.Y2 + margin) * scale);
+					if (x2 <= x1 || y2 <= y1)
+					{
+						continue;
+					}
+
+					using Page page = engine.Process(image, Rect.FromCoords(x1, y1, x2, y2), PageSegMode.SingleLine);
+					string text = CadTextCollector.CleanText(page.GetText() ?? string.Empty);
+					if (text.Length == 0)
+					{
+						continue;
+					}
+
+					result.Add(new RasterTextLine
+					{
+						Text = text,
+						Confidence = page.GetMeanConfidence() * 100f,
+						X1 = r.X1,
+						Y1 = r.Y1,
+						X2 = r.X2 + 1,
+						Y2 = r.Y2 + 1,
+						BaselineY = r.Y2 + 1
+					});
+				}
 			}
 		}
 		catch (Exception)
