@@ -112,7 +112,7 @@ internal static class PdfImporter
 		return pages.Where(p => p >= 1 && p <= pageCount).ToList();
 	}
 
-	private static string UniqueName(string name, HashSet<string> used)
+	internal static string UniqueName(string name, HashSet<string> used)
 	{
 		string candidate = name;
 		for (int i = 2; used.Contains(candidate); i++)
@@ -124,7 +124,7 @@ internal static class PdfImporter
 		return candidate;
 	}
 
-	private static string MakeValidName(string name)
+	internal static string MakeValidName(string name)
 	{
 		char[] invalid = { '{', '}', '[', ']', '|', ';', '<', '>', '?', '`', '~', '\\', ':' };
 		string clean = new string(name.Select(c => invalid.Contains(c) || char.IsControl(c) ? '_' : c).ToArray()).Trim();

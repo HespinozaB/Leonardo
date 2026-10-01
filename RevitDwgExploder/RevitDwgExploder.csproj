@@ -7,9 +7,9 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.13.0</Version>
-    <AssemblyVersion>1.13.0.0</AssemblyVersion>
-    <FileVersion>1.13.0.0</FileVersion>
+    <Version>1.14.0</Version>
+    <AssemblyVersion>1.14.0.0</AssemblyVersion>
+    <FileVersion>1.14.0.0</FileVersion>
     <Product>EMASY</Product>
     <Company>EMASY</Company>
     <Description>Explota DWGs importados/vinculados en Revit preservando escala, texto y estilos de línea.</Description>
@@ -60,6 +60,10 @@
     <EmbeddedResource Include="resources\pdf16.png" LogicalName="RevitDwgExploder.pdf16.png" />
     <EmbeddedResource Include="resources\pdffinder32.png" LogicalName="RevitDwgExploder.pdffinder32.png" />
     <EmbeddedResource Include="resources\pdffinder16.png" LogicalName="RevitDwgExploder.pdffinder16.png" />
+    <EmbeddedResource Include="resources\img32.png" LogicalName="RevitDwgExploder.img32.png" />
+    <EmbeddedResource Include="resources\img16.png" LogicalName="RevitDwgExploder.img16.png" />
+    <EmbeddedResource Include="resources\imgfinder32.png" LogicalName="RevitDwgExploder.imgfinder32.png" />
+    <EmbeddedResource Include="resources\imgfinder16.png" LogicalName="RevitDwgExploder.imgfinder16.png" />
   </ItemGroup>
 
   <ItemGroup>

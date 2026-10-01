@@ -85,7 +85,8 @@ internal sealed class DwgFinderForm : Form
 
 	private void BuildLayout()
 	{
-		Text = _mode == FinderMode.Pdf ? "EMASY · Explotar Varios PDF's" : "EMASY · Explotar Varios DWG's";
+		Text = _mode == FinderMode.Pdf ? "EMASY · Explotar Varios PDF's"
+			: _mode == FinderMode.Image ? "EMASY · Explotar Varias Imágenes" : "EMASY · Explotar Varios DWG's";
 		StartPosition = FormStartPosition.CenterScreen;
 		Size = new Size(1150, 560);
 		MinimumSize = new Size(700, 360);
@@ -154,8 +155,17 @@ internal sealed class DwgFinderForm : Form
 		SetupButton(_refresh, "Actualizar", () => Run(DwgFinderAction.Refresh));
 		var close = new Button { Text = "Cerrar", Width = 90, Height = 28 };
 		close.Click += (s, e) => Close();
-		SetupButton(_addPdf, "Agregar PDF…", AddPdfFiles);
-		buttons.Controls.AddRange(_mode == FinderMode.Pdf
+		if (_mode == FinderMode.Image)
+		{
+			SetupButton(_addPdf, "Agregar imágenes…", AddImageFiles);
+			_addPdf.Width = 130;
+		}
+		else
+		{
+			SetupButton(_addPdf, "Agregar PDF…", AddPdfFiles);
+		}
+
+		buttons.Controls.AddRange(_mode != FinderMode.Dwg
 			? new Control[] { _addPdf, _explode, _select, _locate, _delete, _refresh, close }
 			: new Control[] { _explode, _select, _locate, _delete, _refresh, close });
 		_status.Dock = DockStyle.Fill;
@@ -186,7 +196,7 @@ internal sealed class DwgFinderForm : Form
 			return;
 		}
 
-		using (var dialog = new ExplodeOptionsDialog(selected.Count, _mode == FinderMode.Pdf))
+		using (var dialog = new ExplodeOptionsDialog(selected.Count, _mode))
 		{
 			if (dialog.ShowDialog(this) != DialogResult.OK)
 			{
@@ -245,6 +255,59 @@ internal sealed class DwgFinderForm : Form
 			}
 
 			_handler.ImportScale = options.DrawingScale;
+		}
+
+		_handler.FilePaths = files;
+		Run(DwgFinderAction.ImportFiles);
+	}
+
+	/// <summary>Importa archivos de imagen externos (una vista de dibujo por imagen).</summary>
+	private void AddImageFiles()
+	{
+		List<string> files;
+		using (var dialog = new OpenFileDialog
+		{
+			Title = "Selecciona las imágenes a importar",
+			Filter = RevitDwgExploder.Raster.RasterExploder.FileFilter,
+			Multiselect = true,
+			CheckFileExists = true
+		})
+		{
+			if (dialog.ShowDialog(this) != DialogResult.OK || dialog.FileNames.Length == 0)
+			{
+				return;
+			}
+
+			files = dialog.FileNames.ToList();
+		}
+
+		int fileDpi = 0;
+		string pixelSize = null;
+		if (files.Count == 1)
+		{
+			try
+			{
+				using System.Drawing.Bitmap bitmap = RevitDwgExploder.Raster.RasterExploder.LoadFile(files[0]);
+				fileDpi = RevitDwgExploder.Raster.RasterExploder.DpiOf(bitmap);
+				pixelSize = $"{bitmap.Width} × {bitmap.Height} px, {fileDpi} ppp";
+			}
+			catch (Exception ex)
+			{
+				MessageBox.Show(this, "No se pudo leer la imagen:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+				return;
+			}
+		}
+
+		string label = files.Count == 1 ? System.IO.Path.GetFileName(files[0]) : $"{files.Count} imágenes";
+		using (var options = new ImageImportDialog(label, fileDpi, pixelSize, null))
+		{
+			if (options.ShowDialog(this) != DialogResult.OK)
+			{
+				return;
+			}
+
+			_handler.ImportScale = options.DrawingScale;
+			_handler.ImportDpi = options.Dpi;
 		}
 
 		_handler.FilePaths = files;

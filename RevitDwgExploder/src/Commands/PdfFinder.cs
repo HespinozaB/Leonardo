@@ -13,14 +13,17 @@ namespace RevitDwgExploder.Commands;
 internal static class PdfFinder
 {
 	/// <summary>PDF insertados en el modelo (imágenes cuyo archivo es un PDF) y PDF que quedaron sin instancias.</summary>
-	public static List<DwgFinderEntry> Collect(Document doc)
+	public static List<DwgFinderEntry> Collect(Document doc) => Collect(doc, PdfExploder.IsPdf);
+
+	/// <summary>Imágenes del modelo (instancias y tipos sin instancias) cuyo tipo cumple <paramref name="accept"/>.</summary>
+	public static List<DwgFinderEntry> Collect(Document doc, Func<ImageType, bool> accept)
 	{
 		var result = new List<DwgFinderEntry>();
 		var usedTypes = new HashSet<long>();
 		foreach (ImageInstance instance in new FilteredElementCollector(doc).OfClass(typeof(ImageInstance)).Cast<ImageInstance>())
 		{
 			var type = doc.GetElement(instance.GetTypeId()) as ImageType;
-			if (!PdfExploder.IsPdf(type))
+			if (type == null || !accept(type))
 			{
 				continue;
 			}
@@ -44,7 +47,7 @@ internal static class PdfFinder
 
 		foreach (ImageType type in new FilteredElementCollector(doc).OfClass(typeof(ImageType)).Cast<ImageType>())
 		{
-			if (!PdfExploder.IsPdf(type) || usedTypes.Contains(type.Id.Value))
+			if (!accept(type) || usedTypes.Contains(type.Id.Value))
 			{
 				continue;
 			}
@@ -70,7 +73,7 @@ internal static class PdfFinder
 
 	private static string NameOf(ImageType type)
 	{
-		int page = PdfExploder.PageOf(type);
+		int page = PdfExploder.IsPdf(type) ? PdfExploder.PageOf(type) : 1;
 		return page > 1 ? $"{type.Name} (pág. {page})" : type.Name;
 	}
 
@@ -94,7 +97,13 @@ internal static class PdfFinder
 			path = Path.Combine(Path.GetDirectoryName(doc.PathName) ?? string.Empty, path);
 		}
 
-		return !string.IsNullOrEmpty(path) && File.Exists(path) ? "Archivo encontrado" : "No encontrado";
+		if (!string.IsNullOrEmpty(path) && File.Exists(path))
+		{
+			return "Archivo encontrado";
+		}
+
+		// Las imágenes raster quedan guardadas en el modelo: se pueden explotar aunque falte el archivo.
+		return PdfExploder.IsPdf(type) ? "No encontrado" : "Guardada en el modelo";
 	}
 
 	/// <summary>Explota en lote los PDF elegidos, cada uno en su vista y en la misma posición y tamaño.</summary>

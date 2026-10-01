@@ -220,6 +220,69 @@ internal static class DwgTextImageOcr
 		return result;
 	}
 
+	/// <summary>Línea de texto reconocida en una imagen (píxeles, origen arriba a la izquierda).</summary>
+	internal readonly struct OcrLine
+	{
+		public readonly string Text;
+		public readonly int X1;
+		public readonly int Y1;
+		public readonly int X2;
+		public readonly int Y2;
+
+		public OcrLine(string text, int x1, int y1, int x2, int y2)
+		{
+			Text = text;
+			X1 = x1;
+			Y1 = y1;
+			X2 = x2;
+			Y2 = y2;
+		}
+	}
+
+	/// <summary>Reconoce las líneas de texto de un archivo de imagen (vacío si el OCR no está disponible).</summary>
+	public static List<OcrLine> RecognizeFile(string imagePath)
+	{
+		var result = new List<OcrLine>();
+		TesseractEngine engine = GetEngine();
+		if (engine == null || !File.Exists(imagePath))
+		{
+			return result;
+		}
+
+		try
+		{
+			lock (EngineLock)
+			{
+				using Pix image = Pix.LoadFromFile(imagePath);
+				using Page page = engine.Process(image, PageSegMode.SparseText);
+				using ResultIterator iterator = page.GetIterator();
+				iterator.Begin();
+				do
+				{
+					if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out Rect bounds)
+						|| iterator.GetConfidence(PageIteratorLevel.TextLine) < MinConfidencePercent)
+					{
+						continue;
+					}
+
+					string text = CadTextCollector.CleanText(iterator.GetText(PageIteratorLevel.TextLine));
+					if (text.Length == 0 || !HasAlphanumeric.IsMatch(text))
+					{
+						continue;
+					}
+
+					result.Add(new OcrLine(text, bounds.X1, bounds.Y1, bounds.X2, bounds.Y2));
+				}
+				while (iterator.Next(PageIteratorLevel.TextLine));
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return result;
+	}
+
 	private static TesseractEngine GetEngine()
 	{
 		lock (EngineLock)

@@ -49,14 +49,15 @@ internal static class PdfExploder
 	/// Explota una página en <paramref name="view"/>. <paramref name="origin"/> es el punto del modelo que
 	/// corresponde a la esquina inferior izquierda de la página y <paramref name="feetPerPt"/> la escala.
 	/// </summary>
-	public static bool Explode(Document doc, View view, PdfDrawing drawing, XYZ origin, double feetPerPt, double shortCurveTolerance, PdfExplodeStats stats)
+	public static bool Explode(Document doc, View view, PdfDrawing drawing, XYZ origin, double feetPerPt, double shortCurveTolerance, PdfExplodeStats stats,
+		string stylePrefix = "PDF")
 	{
 		XYZ right = view.RightDirection;
 		XYZ up = view.UpDirection;
 		XYZ ToModel(Pt p) => origin + right.Multiply(p.X * feetPerPt) + up.Multiply(p.Y * feetPerPt);
 
 		double minLength = shortCurveTolerance * 1.01;
-		using var tx = new Transaction(doc, "EMASY: explotar PDF");
+		using var tx = new Transaction(doc, "EMASY: explotar " + stylePrefix);
 		FailureHandlingOptions failureOptions = tx.GetFailureHandlingOptions();
 		failureOptions.SetFailuresPreprocessor(new ExplodeDwgCommand.WarningSwallower());
 		failureOptions.SetClearAfterRollback(true);
@@ -69,7 +70,7 @@ internal static class PdfExploder
 		{
 			var region = new HatchRegion
 			{
-				Layer = "PDF",
+				Layer = stylePrefix,
 				IsSolid = true,
 				PatternName = "SOLID",
 				R = fill.R,
@@ -88,7 +89,7 @@ internal static class PdfExploder
 		}
 
 		// 2) Trazos → Detail Lines agrupadas por Line Style.
-		var styles = new PdfLineStyles(doc);
+		var styles = new PdfLineStyles(doc, stylePrefix);
 		var byStyle = new Dictionary<ElementId, List<Curve>>();
 		var seen = new HashSet<(long, long, long, long)>();
 		foreach (PdfStroke stroke in drawing.Strokes)
@@ -387,9 +388,12 @@ internal sealed class PdfLineStyles
 
 	public int Created { get; private set; }
 
-	public PdfLineStyles(Document doc)
+	private readonly string _prefix;
+
+	public PdfLineStyles(Document doc, string prefix = "PDF")
 	{
 		_doc = doc;
+		_prefix = prefix;
 		_lines = Category.GetCategory(doc, BuiltInCategory.OST_Lines);
 		_existing = new Dictionary<string, Category>(StringComparer.OrdinalIgnoreCase);
 		if (_lines != null)
@@ -412,7 +416,7 @@ internal sealed class PdfLineStyles
 		try
 		{
 			double widthMm = Math.Max(0.0, style.WidthPt) * 25.4 / 72.0;
-			string name = $"PDF {style.R:D3}-{style.G:D3}-{style.B:D3} {widthMm.ToString("0.00", CultureInfo.InvariantCulture)}mm"
+			string name = $"{_prefix} {style.R:D3}-{style.G:D3}-{style.B:D3} {widthMm.ToString("0.00", CultureInfo.InvariantCulture)}mm"
 				+ (style.Dash.Length > 0 ? " [" + style.Dash + "]" : string.Empty);
 			name = name.Replace("[", "(").Replace("]", ")");
 			if (!_existing.TryGetValue(name, out Category sub) && _lines != null)

@@ -110,6 +110,33 @@ public class App : IExternalApplication
 			Image = LoadIcon("RevitDwgExploder.pdffinder16.png"),
 			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
 		});
+
+		RibbonPanel imagePanel = application.CreateRibbonPanel(TabName, "Imágenes Tools");
+		imagePanel.AddItem(new PushButtonData(
+			"ExplodeImageCommand",
+			"Explotar" + Environment.NewLine + "Imagen Actual",
+			assemblyPath,
+			"RevitDwgExploder.Commands.ExplodeImageCommand")
+		{
+			ToolTip = "Explota las imágenes (PNG, JPG, BMP, TIF…) insertadas en la vista actual (o las seleccionadas) en su lugar: " +
+				"se vectorizan y las manchas de color pasan a Filled Regions, los trazos a Detail Lines y los textos (OCR) a TextNotes. " +
+				"Si no hay ninguna, permite elegir un archivo de imagen e importarlo.",
+			LargeImage = LoadIcon("RevitDwgExploder.img32.png"),
+			Image = LoadIcon("RevitDwgExploder.img16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Commands.ExplodePdfAvailability"
+		});
+		imagePanel.AddItem(new PushButtonData(
+			"ImageFinderCommand",
+			"Explotar" + Environment.NewLine + "Varias Imágenes",
+			assemblyPath,
+			"RevitDwgExploder.Commands.ImageFinderCommand")
+		{
+			ToolTip = "Lista todas las imágenes del modelo y permite explotar varias a la vez (cada una en su vista), importar " +
+				"archivos de imagen externos, seleccionarlas, ubicarlas o eliminarlas.",
+			LargeImage = LoadIcon("RevitDwgExploder.imgfinder32.png"),
+			Image = LoadIcon("RevitDwgExploder.imgfinder16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
+		});
 		return Result.Succeeded;
 	}
 

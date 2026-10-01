@@ -10,9 +10,11 @@ internal sealed class ExplodeOptionsDialog : Form
 
 	private readonly CheckBox _deleteOriginals = new CheckBox();
 
-	public ExplodeOptionsDialog(int count, bool pdf = false)
+	public ExplodeOptionsDialog(int count, RevitDwgExploder.Commands.FinderMode mode = RevitDwgExploder.Commands.FinderMode.Dwg)
 	{
-		Text = pdf ? "EMASY · Explotar Varios PDF's" : "EMASY · Explotar Varios DWG's";
+		bool pdf = mode != RevitDwgExploder.Commands.FinderMode.Dwg;
+		bool image = mode == RevitDwgExploder.Commands.FinderMode.Image;
+		Text = image ? "EMASY · Explotar Varias Imágenes" : pdf ? "EMASY · Explotar Varios PDF's" : "EMASY · Explotar Varios DWG's";
 		FormBorderStyle = FormBorderStyle.FixedDialog;
 		MaximizeBox = false;
 		MinimizeBox = false;
@@ -23,14 +25,17 @@ internal sealed class ExplodeOptionsDialog : Form
 
 		var title = new Label
 		{
-			Text = $"Explotar {count} {(pdf ? "PDF" : "DWG")}",
+			Text = image ? $"Explotar {count} imagen(es)" : $"Explotar {count} {(pdf ? "PDF" : "DWG")}",
 			Font = new Font("Segoe UI", 11f, FontStyle.Bold),
 			Location = new Point(16, 14),
 			AutoSize = true
 		};
 		var info = new Label
 		{
-			Text = pdf
+			Text = image
+				? "Cada imagen se vectoriza en su vista, en la misma posición y tamaño: las manchas de color pasan a " +
+					"Filled Regions, los trazos a líneas de detalle y los textos (OCR) a TextNotes."
+				: pdf
 				? "Cada PDF se explota en su vista, en la misma posición y tamaño que la imagen: sus trazos, rellenos y " +
 					"textos se convierten en líneas de detalle, Filled Regions y TextNotes."
 				: "Cada DWG se explota en su vista (la propia si está \"solo en su vista\"; si es de modelo, la vista " +
@@ -45,7 +50,7 @@ internal sealed class ExplodeOptionsDialog : Form
 		_adjustScale.AutoSize = true;
 		_adjustScale.Visible = !pdf;
 
-		_deleteOriginals.Text = pdf ? "Eliminar los PDF originales después de explotarlos" : "Eliminar los DWG originales después de explotarlos";
+		_deleteOriginals.Text = image ? "Eliminar las imágenes originales después de explotarlas" : pdf ? "Eliminar los PDF originales después de explotarlos" : "Eliminar los DWG originales después de explotarlos";
 		_deleteOriginals.Location = new Point(18, pdf ? 100 : 128);
 		_deleteOriginals.AutoSize = true;
 

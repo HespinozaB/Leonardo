@@ -51,7 +51,8 @@ internal enum DwgFinderAction
 internal enum FinderMode
 {
 	Dwg,
-	Pdf
+	Pdf,
+	Image
 }
 
 /// <summary>
@@ -68,6 +69,9 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 	public List<string> FilePaths = new List<string>();
 
 	public int ImportScale;
+
+	/// <summary>Agregar imágenes: resolución (ppp, 0 = la de cada archivo).</summary>
+	public int ImportDpi;
 
 	public List<long> Ids = new List<long>();
 
@@ -119,10 +123,14 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 				case DwgFinderAction.Explode:
 					message = Mode == FinderMode.Pdf
 						? PdfFinder.Explode(app, uiDoc, ids, DeleteOriginals)
-						: Explode(app, uiDoc, ids, AdjustScale, DeleteOriginals);
+						: Mode == FinderMode.Image
+							? ImageFinder.Explode(app, uiDoc, ids, DeleteOriginals)
+							: Explode(app, uiDoc, ids, AdjustScale, DeleteOriginals);
 					break;
 				case DwgFinderAction.ImportFiles:
-					message = PdfFinder.ImportFiles(app, uiDoc, FilePaths, ImportScale);
+					message = Mode == FinderMode.Image
+						? ImageFinder.ImportFiles(app, uiDoc, FilePaths, ImportDpi, ImportScale)
+						: PdfFinder.ImportFiles(app, uiDoc, FilePaths, ImportScale);
 					break;
 				case DwgFinderAction.Refresh:
 					// Redibuja la vista activa para que desaparezca lo eliminado.
@@ -138,9 +146,13 @@ internal sealed class DwgFinderHandler : IExternalEventHandler
 		OnResult?.Invoke(CollectFor(doc), doc.Title, message);
 	}
 
-	public string GetName() => Mode == FinderMode.Pdf ? "EMASY - Explotar Varios PDF's" : "EMASY - Explotar Varios DWG's";
+	public string GetName() => Mode == FinderMode.Pdf ? "EMASY - Explotar Varios PDF's"
+		: Mode == FinderMode.Image ? "EMASY - Explotar Varias Imágenes" : "EMASY - Explotar Varios DWG's";
 
-	private List<DwgFinderEntry> CollectFor(Document doc) => Mode == FinderMode.Pdf ? PdfFinder.Collect(doc) : Collect(doc);
+	internal static List<DwgFinderEntry> CollectFor(Document doc, FinderMode mode) =>
+		mode == FinderMode.Pdf ? PdfFinder.Collect(doc) : mode == FinderMode.Image ? ImageFinder.Collect(doc) : Collect(doc);
+
+	private List<DwgFinderEntry> CollectFor(Document doc) => CollectFor(doc, Mode);
 
 	/// <summary>Instancias que lista la ventana (CAD o imágenes PDF).</summary>
 	internal static bool IsListedInstance(Element element) => element is ImportInstance || element is ImageInstance;
@@ -608,7 +620,7 @@ public class DwgFinderCommand : IExternalCommand
 		var handler = new DwgFinderHandler { Mode = mode };
 		var externalEvent = ExternalEvent.Create(handler);
 		var form = new DwgFinderForm(handler, externalEvent, mode);
-		form.SetEntries(mode == FinderMode.Pdf ? PdfFinder.Collect(doc) : DwgFinderHandler.Collect(doc), doc.Title, null);
+		form.SetEntries(DwgFinderHandler.CollectFor(doc, mode), doc.Title, null);
 		form.Show(new WindowHandle(app.MainWindowHandle));
 		Forms[mode] = form;
 		return Result.Succeeded;

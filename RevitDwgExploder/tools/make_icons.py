@@ -72,7 +72,7 @@ def render_finder(stroke, detail=True):
     return img
 
 
-def pdf_badge(d, y, height, text_size):
+def pdf_badge(d, y, height, text_size, label="PDF"):
     """Etiqueta "PDF" blanca en la parte baja del icono."""
     from PIL import ImageFont
     try:
@@ -80,7 +80,7 @@ def pdf_badge(d, y, height, text_size):
     except OSError:
         font = ImageFont.load_default()
     d.rounded_rectangle([u(22), u(y), u(78), u(y + height)], radius=int(u(4)), fill=WHITE)
-    d.text((u(50), u(y + height / 2)), "PDF", fill=GRAY, font=font, anchor="mm")
+    d.text((u(50), u(y + height / 2)), label, fill=GRAY, font=font, anchor="mm")
 
 
 def render_pdf(stroke, finder=False, detail=True):
@@ -110,6 +110,34 @@ def render_pdf(stroke, finder=False, detail=True):
     return img
 
 
+def render_img(stroke, finder=False, detail=True):
+    """Explotar imagen: cuadro con montaña y sol, separado en piezas (o con lupa), y la etiqueta IMG."""
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([u(1), u(1), u(99), u(99)], fill=GRAY)
+    if finder:
+        poly(d, [(22, 18), (66, 18), (66, 60), (22, 60)], stroke)
+        d.line([(u(26), u(56)), (u(38), u(38)), (u(46), u(48)), (u(52), u(42)), (u(62), u(56))], fill=WHITE, width=int(u(stroke)), joint="curve")
+        cx, cy, r = 66, 48, 11
+        d.ellipse([u(cx - r - stroke), u(cy - r - stroke), u(cx + r + stroke), u(cy + r + stroke)], fill=GRAY)
+        d.ellipse([u(cx - r), u(cy - r), u(cx + r), u(cy + r)], outline=WHITE, width=int(u(stroke)))
+        line(d, (cx + r * 0.7, cy + r * 0.7), (80, 62), stroke * 1.3)
+    else:
+        g = 3.5
+        move = lambda pts, dx, dy: [(x + dx, y + dy) for x, y in pts]
+        poly(d, move([(24, 16), (48, 16), (48, 38), (24, 38)], -g, -g), stroke)
+        poly(d, move([(48, 16), (74, 16), (74, 38), (48, 38)], g, -g), stroke)
+        poly(d, move([(24, 38), (48, 38), (48, 60), (24, 60)], -g, g), stroke)
+        poly(d, move([(48, 38), (74, 38), (74, 60), (48, 60)], g, g), stroke)
+        if detail:
+            r = 4.5
+            d.ellipse([u(62 + g - r), u(27 - g - r), u(62 + g + r), u(27 - g + r)], fill=WHITE)
+            d.line([(u(28 - g), u(56 + g)), (u(40 - g), u(44 + g))], fill=WHITE, width=int(u(stroke)))
+            d.line([(u(52 + g), u(46 + g)), (u(58 + g), u(42 + g)), (u(70 + g), u(56 + g))], fill=WHITE, width=int(u(stroke)), joint="curve")
+    pdf_badge(d, 68, 18, 14, "IMG")
+    return img
+
+
 def save(size, stroke, name, detail=True):
     render(stroke, detail).resize((size, size), Image.LANCZOS).save(OUT / name)
 
@@ -127,4 +155,10 @@ render_pdf(2.6).resize((256, 256), Image.LANCZOS).save(OUT / "pdf256.png")
 render_pdf(4.0, finder=True).resize((32, 32), Image.LANCZOS).save(OUT / "pdffinder32.png")
 render_pdf(6.0, finder=True).resize((16, 16), Image.LANCZOS).save(OUT / "pdffinder16.png")
 render_pdf(2.6, finder=True).resize((256, 256), Image.LANCZOS).save(OUT / "pdffinder256.png")
+render_img(4.0).resize((32, 32), Image.LANCZOS).save(OUT / "img32.png")
+render_img(6.0, detail=False).resize((16, 16), Image.LANCZOS).save(OUT / "img16.png")
+render_img(2.6).resize((256, 256), Image.LANCZOS).save(OUT / "img256.png")
+render_img(4.0, finder=True).resize((32, 32), Image.LANCZOS).save(OUT / "imgfinder32.png")
+render_img(6.0, finder=True).resize((16, 16), Image.LANCZOS).save(OUT / "imgfinder16.png")
+render_img(2.6, finder=True).resize((256, 256), Image.LANCZOS).save(OUT / "imgfinder256.png")
 print("iconos generados en", OUT)

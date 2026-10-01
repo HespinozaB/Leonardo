@@ -1,10 +1,11 @@
 # EMASY · DWG Tools (Revit 2024)
 
-Addin con dos comandos en la pestaña **EMASY** → grupo **DWG Tools**:
+Addin con tres grupos en la pestaña **EMASY**:
 
-- **Explotar DWGs**: convierte los DWG importados/vinculados de la vista activa (o los seleccionados) en
+- **DWG Tools** — *Explotar en Vista Actual* y *Explotar Varios DWG's*: convierte los DWG importados/vinculados en
   Detail Lines, Filled Regions y TextNotes nativos de Revit, en la misma posición y escala, sin tocar el DWG original.
-- **Buscador DWG's**: lista todos los archivos DWG/CAD del modelo y permite seleccionarlos, ubicarlos o eliminarlos.
+- **PDF Tools** — *Explotar PDF Actual* y *Explotar Varios PDF's*: lo mismo con los PDF (insertados o desde archivo).
+- **Imágenes Tools** — *Explotar Imagen Actual* y *Explotar Varias Imágenes*: vectoriza imágenes de planos (PNG, JPG…).
 
 ## Instalación
 
@@ -34,6 +35,21 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 ```
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
+
+## Cambios de la versión 1.14
+
+### Nuevo grupo Imágenes Tools
+
+- **Explotar Imagen Actual**: explota las imágenes (PNG, JPG, BMP, TIF, GIF) insertadas en la vista actual (o las
+  seleccionadas) en su lugar, con la misma posición y tamaño. Si no hay ninguna, permite elegir un archivo de imagen
+  e importarlo en una vista de dibujo nueva o en la vista actual (resolución en ppp y escala 1:N).
+- **Explotar Varias Imágenes**: la misma ventana de lista que DWG/PDF con todas las imágenes del modelo: buscar,
+  filtrar, seleccionar, ubicar, eliminar, explotar varias a la vez y "Agregar imágenes…" desde archivos.
+- La imagen se vectoriza: las manchas grandes de color pasan a Filled Regions (con su color), los trazos a Detail
+  Lines rectas (Line Styles "IMG R-G-B grosor", con grosores ajustados a plumas estándar) y los textos se reconocen por
+  OCR (Tesseract) como TextNotes. Las imágenes importadas en Revit se pueden explotar aunque falte el archivo original.
+- Funciona mejor con planos limpios (fondo claro, buena resolución); fotos, degradados o escaneos borrosos dan un
+  resultado aproximado.
 
 ## Cambios de la versión 1.13
 
