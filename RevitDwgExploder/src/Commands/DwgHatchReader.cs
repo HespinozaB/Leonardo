@@ -50,6 +50,12 @@ internal sealed class HatchRegion
 	public byte G;
 
 	public byte B;
+
+	/// <summary>
+	/// El primer contorno es el exterior y los demás son huecos (rellenos de imágenes). Si Revit no acepta todos
+	/// juntos, se crea el exterior y se añaden solo los huecos que acepte: nunca se rellena un hueco.
+	/// </summary>
+	public bool OuterFirst;
 }
 
 /// <summary>

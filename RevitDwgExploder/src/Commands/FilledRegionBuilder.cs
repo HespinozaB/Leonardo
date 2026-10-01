@@ -43,6 +43,8 @@ internal sealed class FilledRegionBuilder
 
 	public int Failed { get; private set; }
 
+	private ElementId _lastCreated;
+
 	public FilledRegionBuilder(Document doc, View view, double shortCurveTolerance)
 	{
 		_doc = doc;
@@ -95,7 +97,81 @@ internal sealed class FilledRegionBuilder
 			return false;
 		}
 
-		return CreateRegion(typeId, hatch.Loops);
+		return hatch.OuterFirst ? CreateWithHoles(typeId, hatch.Loops) : CreateRegion(typeId, hatch.Loops);
+	}
+
+	/// <summary>
+	/// Contorno exterior + huecos. Si Revit no los acepta juntos, se crea el exterior solo y se le van añadiendo los
+	/// huecos que acepte (recreando la región); un hueco nunca se crea como relleno aparte.
+	/// </summary>
+	private bool CreateWithHoles(ElementId typeId, List<List<XYZ>> pointLoops)
+	{
+		if (pointLoops.Count == 0)
+		{
+			Failed++;
+			return false;
+		}
+
+		foreach (Plane plane in _planes.ToList())
+		{
+			List<CurveLoop> all = pointLoops.Select(p => ToLoop(p, plane)).ToList();
+			if (all[0] == null)
+			{
+				continue;
+			}
+
+			if (all.Count > 1 && all.All(l => l != null) && TryCreate(typeId, all))
+			{
+				Prefer(plane);
+				return true;
+			}
+
+			ElementId current = TryCreateId(typeId, new List<CurveLoop> { all[0] });
+			if (current == null)
+			{
+				continue;
+			}
+
+			Prefer(plane);
+			var accepted = new List<CurveLoop> { all[0] };
+			foreach (CurveLoop hole in all.Skip(1).Where(l => l != null))
+			{
+				var attempt = new List<CurveLoop>(accepted) { hole };
+				ElementId replaced = TryCreateId(typeId, attempt);
+				if (replaced == null)
+				{
+					continue;
+				}
+
+				try
+				{
+					_doc.Delete(current);
+					Created--;
+				}
+				catch (Exception)
+				{
+				}
+
+				current = replaced;
+				accepted = attempt;
+			}
+
+			return true;
+		}
+
+		Failed++;
+		return false;
+	}
+
+	private ElementId TryCreateId(ElementId typeId, IList<CurveLoop> loops)
+	{
+		int before = Created;
+		if (!TryCreate(typeId, loops))
+		{
+			return null;
+		}
+
+		return Created > before ? _lastCreated : null;
 	}
 
 	/// <summary>Relleno sólido a partir de contornos de Revit (mallas o láminas del CAD), con el color dado.</summary>
@@ -185,6 +261,7 @@ internal sealed class FilledRegionBuilder
 		try
 		{
 			FilledRegion region = FilledRegion.Create(_doc, typeId, _view.Id, loops);
+			_lastCreated = region.Id;
 			ElementId invisible = GetInvisibleLineStyle();
 			if (invisible != null)
 			{

@@ -36,6 +36,28 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.17
+
+### Explotar imágenes: máxima interpretación y calidad de imagen
+
+- **Calidad de imagen**: las imágenes de baja resolución (lado mayor ≤ 1600 px) se amplían 2× antes de procesarlas;
+  líneas y rellenos salen más continuos y el texto pequeño se lee mejor.
+- **Textos**:
+  - OCR en español + inglés (modelo de español incluido): tildes y Ñ (TÉCNICAS, LÁMINAS, BAÑOS, BRUÑADO).
+  - Cada zona de texto dudosa se vuelve a leer sola, con los dos idiomas y en dos versiones de la imagen; gana la
+    lectura más segura. Las etiquetas pegadas a títulos o líneas ya no se mezclan.
+  - Corrector con vocabulario de construcción (español/inglés): tildes que faltan y letras confundidas típicas del OCR
+    (WACK → WICK, MEADER → HEADER, STUOS → STUDS, RESSSTANT → RESISTANT), solo cuando hay motivo y una única
+    palabra posible. Viñetas « “ * - → "·" y "NIVEL 20.00" → "NIVEL ±0.00".
+  - Se descartan lecturas basura de rayados (códigos con baja confianza, palabras cortas en minúsculas, cajas
+    demasiado estrechas).
+- **Líneas**: detección directa de líneas rectas a 0°, 90°, 45° y 135° (muros, rayados): los rayados cruzados salen
+  como líneas rectas continuas en vez de zigzag; las líneas que se cortan en los cruces se vuelven a unir; el color de
+  las líneas finas se toma de su tinta real (ya no salen grises claras).
+- **Rellenos válidos para Revit**: los contornos se limpian (sin partes de 1 px ni "pellizcos" en diagonal), se
+  comprueba que no se crucen y se respeta el tramo mínimo de Revit; si Revit rechaza algún hueco, se crea el relleno
+  con los huecos que acepte (antes se perdían rellenos grandes, como la membrana gris).
+
 ## Cambios de la versión 1.16
 
 ### Explotar imágenes: textos del tamaño correcto y más rápido

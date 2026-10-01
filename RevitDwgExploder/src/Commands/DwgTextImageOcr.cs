@@ -23,9 +23,13 @@ internal static class DwgTextImageOcr
 
 	private static readonly object EngineLock = new object();
 
-	private static TesseractEngine _engine;
+	/// <summary>Motores ya creados por idioma ("eng", "spa+eng"); null = no se pudo crear.</summary>
+	private static readonly Dictionary<string, TesseractEngine> Engines = new Dictionary<string, TesseractEngine>();
 
-	private static bool _engineFailed;
+	private static string DataPath => Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty, "tessdata");
+
+	/// <summary>Español + inglés si está el modelo de español (acentos, Ñ); si no, inglés.</summary>
+	private static string TextLanguage => File.Exists(Path.Combine(DataPath, "spa.traineddata")) ? "spa+eng" : "eng";
 
 	public static List<DwgTextImporter.DwgTextEntry> Recognize(Document doc, View view, ImportInstance importInstance)
 	{
@@ -225,13 +229,13 @@ internal static class DwgTextImageOcr
 	/// Lee las líneas de texto de una imagen (ampliada <paramref name="scale"/> veces respecto a la original): las
 	/// coordenadas se devuelven en píxeles de la imagen original. Vacío si el OCR no está disponible.
 	/// </summary>
-	public static List<RasterTextLine> RecognizeLines(string imagePath, int scale)
+	public static List<RasterTextLine> RecognizeLines(string imagePath, int scale, string language = null)
 	{
-		var result = new List<RasterTextLine>();
-		TesseractEngine engine = GetEngine();
+		var words = new List<RasterText.OcrWord>();
+		TesseractEngine engine = GetEngine(language ?? TextLanguage);
 		if (engine == null || !File.Exists(imagePath))
 		{
-			return result;
+			return new List<RasterTextLine>();
 		}
 
 		try
@@ -242,44 +246,50 @@ internal static class DwgTextImageOcr
 				using Page page = engine.Process(image, PageSegMode.SparseText);
 				using ResultIterator iterator = page.GetIterator();
 				iterator.Begin();
+				int lineId = 0;
+				double baseline = 0;
 				do
 				{
-					if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out Rect bounds))
+					if (iterator.IsAtBeginningOf(PageIteratorLevel.TextLine))
+					{
+						lineId++;
+						baseline = double.NaN;
+						if (iterator.TryGetBaseline(PageIteratorLevel.TextLine, out Rect line))
+						{
+							baseline = (line.Y1 + line.Y2) / 2.0;
+						}
+					}
+
+					if (!iterator.TryGetBoundingBox(PageIteratorLevel.Word, out Rect bounds))
 					{
 						continue;
 					}
 
-					string text = CadTextCollector.CleanText(iterator.GetText(PageIteratorLevel.TextLine));
+					string text = CadTextCollector.CleanText(iterator.GetText(PageIteratorLevel.Word));
 					if (text.Length == 0)
 					{
 						continue;
 					}
 
-					double baseline = bounds.Y2;
-					if (iterator.TryGetBaseline(PageIteratorLevel.TextLine, out Rect line))
-					{
-						baseline = (line.Y1 + line.Y2) / 2.0;
-					}
-
-					result.Add(new RasterTextLine
-					{
-						Text = text,
-						Confidence = iterator.GetConfidence(PageIteratorLevel.TextLine),
-						X1 = bounds.X1 / scale,
-						Y1 = bounds.Y1 / scale,
-						X2 = (bounds.X2 + scale - 1) / scale,
-						Y2 = (bounds.Y2 + scale - 1) / scale,
-						BaselineY = baseline / scale
-					});
+					double wordBaseline = double.IsNaN(baseline) ? bounds.Y2 : baseline;
+					words.Add(new RasterText.OcrWord(
+						text,
+						bounds.X1 / scale,
+						bounds.Y1 / scale,
+						(bounds.X2 + scale - 1) / scale,
+						(bounds.Y2 + scale - 1) / scale,
+						iterator.GetConfidence(PageIteratorLevel.Word),
+						lineId,
+						wordBaseline / scale));
 				}
-				while (iterator.Next(PageIteratorLevel.TextLine));
+				while (iterator.Next(PageIteratorLevel.Word));
 			}
 		}
 		catch (Exception)
 		{
 		}
 
-		return result;
+		return RasterText.GroupWords(words);
 	}
 
 	/// <summary>
@@ -289,8 +299,15 @@ internal static class DwgTextImageOcr
 	public static List<RasterTextLine> RecognizeRegions(string imagePath, int scale, IList<PixelRect> regions)
 	{
 		var result = new List<RasterTextLine>();
-		TesseractEngine engine = GetEngine();
-		if (engine == null || regions.Count == 0 || !File.Exists(imagePath))
+		if (regions.Count == 0 || !File.Exists(imagePath))
+		{
+			return result;
+		}
+
+		// Cada zona se lee con inglés y con español + inglés: en etiquetas cortas uno u otro acierta ("TIPO" en inglés,
+		// "LÁMINAS" en español). Se queda la lectura creíble de mayor confianza.
+		var engines = new[] { GetEngine("eng"), TextLanguage == "eng" ? null : GetEngine(TextLanguage) }.Where(e => e != null).ToList();
+		if (engines.Count == 0)
 		{
 			return result;
 		}
@@ -310,17 +327,37 @@ internal static class DwgTextImageOcr
 						continue;
 					}
 
-					using Page page = engine.Process(image, Rect.FromCoords(x1, y1, x2, y2), PageSegMode.SingleLine);
-					string text = CadTextCollector.CleanText(page.GetText() ?? string.Empty);
-					if (text.Length == 0)
+					string bestText = null;
+					float bestConfidence = -1f;
+					bool bestPlausible = false;
+					foreach (TesseractEngine engine in engines)
+					{
+						using Page page = engine.Process(image, Rect.FromCoords(x1, y1, x2, y2), PageSegMode.SingleLine);
+						string text = CadTextCollector.CleanText(page.GetText() ?? string.Empty);
+						if (text.Length == 0)
+						{
+							continue;
+						}
+
+						float confidence = page.GetMeanConfidence() * 100f;
+						bool plausible = RasterText.IsPlausible(text, confidence);
+						if ((plausible && !bestPlausible) || (plausible == bestPlausible && confidence > bestConfidence))
+						{
+							bestText = text;
+							bestConfidence = confidence;
+							bestPlausible = plausible;
+						}
+					}
+
+					if (bestText == null)
 					{
 						continue;
 					}
 
 					result.Add(new RasterTextLine
 					{
-						Text = text,
-						Confidence = page.GetMeanConfidence() * 100f,
+						Text = bestText,
+						Confidence = bestConfidence,
 						X1 = r.X1,
 						Y1 = r.Y1,
 						X2 = r.X2 + 1,
@@ -337,32 +374,30 @@ internal static class DwgTextImageOcr
 		return result;
 	}
 
-	private static TesseractEngine GetEngine()
+	private static TesseractEngine GetEngine(string language = "eng")
 	{
 		lock (EngineLock)
 		{
-			if (_engine != null || _engineFailed)
+			if (Engines.TryGetValue(language, out TesseractEngine existing))
 			{
-				return _engine;
+				return existing;
 			}
 
+			TesseractEngine engine = null;
 			try
 			{
-				string dataPath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty, "tessdata");
-				if (!Directory.Exists(dataPath))
+				if (Directory.Exists(DataPath))
 				{
-					_engineFailed = true;
-					return null;
+					engine = new TesseractEngine(DataPath, language, EngineMode.Default);
 				}
-
-				_engine = new TesseractEngine(dataPath, "eng", EngineMode.Default);
-				return _engine;
 			}
 			catch (Exception)
 			{
-				_engineFailed = true;
-				return null;
+				engine = null;
 			}
+
+			Engines[language] = engine;
+			return engine;
 		}
 	}
 
@@ -370,8 +405,12 @@ internal static class DwgTextImageOcr
 	{
 		lock (EngineLock)
 		{
-			_engine?.Dispose();
-			_engine = null;
+			foreach (TesseractEngine engine in Engines.Values)
+			{
+				engine?.Dispose();
+			}
+
+			Engines.Clear();
 		}
 	}
 }

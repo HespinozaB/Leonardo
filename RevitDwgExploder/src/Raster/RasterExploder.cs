@@ -30,6 +30,9 @@ internal static class RasterExploder
 	/// <summary>Lado máximo (píxeles) con el que se vectoriza: imágenes más grandes se reducen (tiempo y memoria).</summary>
 	private const int MaxSide = 3200;
 
+	/// <summary>Imágenes con el lado mayor hasta este tamaño se amplían 2× para vectorizarlas (baja resolución).</summary>
+	private const int EnhanceBelow = 1600;
+
 	/// <summary>Grosores de pluma (mm de papel) de los trazos, del más fino al más grueso.</summary>
 	private static readonly double[] StandardWidthsMm = { 0.13, 0.18, 0.25, 0.35 };
 
@@ -80,8 +83,11 @@ internal static class RasterExploder
 			return false;
 		}
 
-		// Se trabaja a un tamaño acotado; el píxel crece en la misma proporción.
-		double factor = Math.Min(1.0, (double)MaxSide / Math.Max(bitmap.Width, bitmap.Height));
+		// Calidad de imagen: una imagen de baja resolución se amplía 2× (bicúbico) antes de vectorizar; las líneas
+		// finas y los rellenos estrechos salen continuos y rectos. Las grandes se reducen hasta un tamaño acotado.
+		int longest = Math.Max(bitmap.Width, bitmap.Height);
+		double enhancement = longest <= EnhanceBelow ? 2.0 : 1.0;
+		double factor = Math.Min(enhancement, (double)MaxSide / longest);
 		int width = Math.Max(1, (int)Math.Round(bitmap.Width * factor));
 		int height = Math.Max(1, (int)Math.Round(bitmap.Height * factor));
 		double feetPerPx = feetPerPixel * bitmap.Width / width;
@@ -92,13 +98,17 @@ internal static class RasterExploder
 			argb = Pixels(work);
 		}
 
+		// Lado mínimo de un relleno en píxeles: Revit no admite tramos más cortos que su tolerancia.
+		double minSegment = shortCurveTolerance * 1.6 / feetPerPx;
+
 		// 1ª pasada: líneas y rellenos, para preparar las imágenes del OCR.
-		RasterDrawing firstPass = RasterVectorizer.Vectorize(width, height, argb, null);
-		List<RasterTextLine> texts = ReadTexts(width, height, argb, firstPass);
+		double pixelScale = Math.Max(1.0, factor);
+		RasterDrawing firstPass = RasterVectorizer.Vectorize(width, height, argb, null, minSegment: minSegment, pixelScale: pixelScale);
+		List<RasterTextLine> texts = ReadTexts(width, height, argb, firstPass, pixelScale);
 
 		// 2ª pasada: sin los píxeles de los textos reconocidos (serían cientos de trazos cortos).
 		IEnumerable<PixelRect> ignore = texts.Select(RasterText.EraseArea);
-		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore);
+		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore, minSegment: minSegment, pixelScale: pixelScale);
 		PdfDrawing drawing = ToDrawing(raster, texts);
 		return PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
 	}
@@ -107,9 +117,10 @@ internal static class RasterExploder
 	/// OCR en tres lecturas: la imagen tal cual, la imagen "limpia" (sin rellenos, líneas largas ni grises claros) y,
 	/// una a una, las zonas con forma de texto que no se leyeron. Se queda la lectura más segura de cada zona.
 	/// </summary>
-	private static List<RasterTextLine> ReadTexts(int width, int height, uint[] argb, RasterDrawing firstPass)
+	private static List<RasterTextLine> ReadTexts(int width, int height, uint[] argb, RasterDrawing firstPass, double pixelScale)
 	{
-		int scale = RasterText.OcrScale(width, height);
+		// El OCR lee a ~2× de la imagen original: si ya se amplió para vectorizar, no se vuelve a ampliar.
+		int scale = pixelScale >= 2.0 ? 1 : RasterText.OcrScale(width, height);
 		string dir = Path.Combine(Path.GetTempPath(), "EMASY_img_" + Guid.NewGuid().ToString("N"));
 		var candidates = new List<RasterTextLine>();
 		try
@@ -122,13 +133,36 @@ internal static class RasterExploder
 			RasterText.WritePgm(plainPath, RasterText.Upscale(plain, width, height, scale, out int pw, out int ph), pw, ph);
 			RasterText.WritePgm(cleanPath, RasterText.Upscale(clean, width, height, scale, out int cw, out int ch), cw, ch);
 
-			candidates.AddRange(DwgTextImageOcr.RecognizeLines(plainPath, scale));
-			candidates.AddRange(DwgTextImageOcr.RecognizeLines(cleanPath, scale));
-			List<RasterTextLine> lines = RasterText.Merge(Accepted(candidates, height));
+			// 1) Lectura de página de las dos imágenes con inglés y con español + inglés (tildes, Ñ): sirve sobre todo
+			//    para encontrar dónde hay texto.
+			foreach (string path in new[] { plainPath, cleanPath })
+			{
+				candidates.AddRange(DwgTextImageOcr.RecognizeLines(path, scale, "eng"));
+				candidates.AddRange(DwgTextImageOcr.RecognizeLines(path, scale));
+			}
 
-			List<PixelRect> regions = RasterText.FindTextCandidates(clean, width, height, lines);
-			lines.AddRange(Accepted(DwgTextImageOcr.RecognizeRegions(cleanPath, scale, regions), height));
-			lines = RasterText.Merge(lines);
+			RasterText.PlanReading(candidates, height, out List<RasterTextLine> lines, out List<PixelRect> reread, out List<RasterTextLine> fallback);
+
+			// 2) Las zonas dudosas y 3) las zonas con forma de texto que nadie leyó se leen una a una, en las dos
+			//    imágenes y con los dos idiomas; gana la lectura mejor puntuada.
+			var found = new List<RasterTextLine>(lines.Concat(fallback));
+			foreach (string path in new[] { plainPath, cleanPath })
+			{
+				found.AddRange(Accepted(DwgTextImageOcr.RecognizeRegions(path, scale, reread), height));
+			}
+
+			found = RasterText.Merge(found);
+			List<PixelRect> regions = RasterText.FindTextCandidates(clean, width, height, found);
+			foreach (string path in new[] { plainPath, cleanPath })
+			{
+				found.AddRange(Accepted(DwgTextImageOcr.RecognizeRegions(path, scale, regions), height));
+			}
+
+			lines = RasterText.Merge(found);
+			foreach (RasterTextLine line in lines)
+			{
+				line.Text = TextCorrector.Correct(line.Text, line.Confidence);
+			}
 
 			RasterText.FitTexts(lines, plain, width, height);
 			return lines;
@@ -155,7 +189,8 @@ internal static class RasterExploder
 		foreach (RasterTextLine line in lines)
 		{
 			int boxHeight = line.Y2 - line.Y1;
-			if (boxHeight < 5 || boxHeight > height * 0.08 || !RasterText.IsPlausible(line.Text, line.Confidence))
+			if (boxHeight < 5 || boxHeight > height * 0.08 || !RasterText.IsPlausible(line.Text, line.Confidence)
+				|| !RasterText.FitsBox(line))
 			{
 				continue;
 			}
@@ -246,7 +281,7 @@ internal static class RasterExploder
 				continue;
 			}
 
-			var shape = new PdfFillShape { R = fill.R, G = fill.G, B = fill.B };
+			var shape = new PdfFillShape { R = fill.R, G = fill.G, B = fill.B, OuterFirst = true };
 			shape.Loops.Add(fill.Outline.Select(p => new Pt(p.X, h - p.Y)).ToList());
 			foreach (List<(double X, double Y)> hole in fill.Holes.Where(l => l.Count >= 3))
 			{

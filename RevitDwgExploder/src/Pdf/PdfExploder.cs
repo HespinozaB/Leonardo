@@ -72,6 +72,7 @@ internal static class PdfExploder
 			{
 				Layer = stylePrefix,
 				IsSolid = true,
+				OuterFirst = fill.OuterFirst,
 				PatternName = "SOLID",
 				R = fill.R,
 				G = fill.G,

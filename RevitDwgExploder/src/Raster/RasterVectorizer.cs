@@ -66,12 +66,23 @@ internal readonly struct PixelRect
 /// </summary>
 internal static class RasterVectorizer
 {
+	/// <summary>Escala de píxel de la vectorización en curso (ver <c>pixelScale</c> en <see cref="Vectorize"/>).</summary>
+	[ThreadStatic]
+	private static double S;
+
 	private const byte Background = 0;
 	private const byte Ink = 1;
 	private const byte FillPixel = 2;
 
-	public static RasterDrawing Vectorize(int width, int height, uint[] argb, IEnumerable<PixelRect> ignore, double simplifyTolerance = 1.2)
+	/// <param name="minSegment">Largo mínimo (píxeles) de un lado de relleno: el tramo más corto que admite Revit.</param>
+	/// <param name="pixelScale">
+	/// Ampliación con la que se trabaja respecto a la imagen original (2 si se amplió una imagen de baja resolución): los
+	/// tamaños mínimos (grosores, motas, rachas) se escalan para que el resultado no dependa de la ampliación.
+	/// </param>
+	public static RasterDrawing Vectorize(int width, int height, uint[] argb, IEnumerable<PixelRect> ignore, double simplifyTolerance = 1.2,
+		double minSegment = 0.0, double pixelScale = 1.0)
 	{
+		S = Math.Max(1.0, pixelScale);
 		var drawing = new RasterDrawing { Width = width, Height = height };
 		int n = width * height;
 		var luma = new byte[n];
@@ -116,11 +127,12 @@ internal static class RasterVectorizer
 		// Grosor del trazo en cada píxel de tinta (distancia al fondo).
 		int[] distance = DistanceToBackground(cls, width, height);
 
-		ExtractTints(drawing, cls, ignored, argb, luma, background, width, height);
-		ExtractFills(drawing, cls, distance, argb, luma, threshold, width, height);
-		RemoveSpecks(cls, width, height, 6);
+		ExtractTints(drawing, cls, ignored, argb, luma, background, width, height, minSegment);
+		ExtractFills(drawing, cls, distance, argb, luma, threshold, width, height, minSegment);
+		RemoveSpecks(cls, width, height, (int)Math.Round(6 * S * S));
 		drawing.Classes = cls;
-		ExtractLines(drawing, cls, distance, argb, width, height, simplifyTolerance);
+		ExtractStraightRuns(drawing, cls, argb, width, height);
+		ExtractLines(drawing, cls, distance, argb, width, height, simplifyTolerance * S);
 		return drawing;
 	}
 
@@ -257,15 +269,15 @@ internal static class RasterVectorizer
 	/// Manchas de tinta "gruesas" (el interior queda lejos del borde) y de color uniforme: se convierten en rellenos y
 	/// se quitan de la tinta. Las líneas, aunque sean de color, son finas y siguen como líneas.
 	/// </summary>
-	private static void ExtractFills(RasterDrawing drawing, byte[] cls, int[] distance, uint[] argb, byte[] luma, int threshold, int w, int h)
+	private static void ExtractFills(RasterDrawing drawing, byte[] cls, int[] distance, uint[] argb, byte[] luma, int threshold, int w, int h, double minSegment)
 	{
 		// Núcleos "gruesos" (≥5 px al borde) de cualquier color, y núcleos medianos (≥2.3 px) de color o gris no oscuro:
 		// así entran también las muestras de color pequeñas (leyendas) sin convertir en relleno las líneas negras.
-		int minAreaThick = Math.Max(150, w * h / 4000);
-		int minAreaMedium = Math.Max(40, w * h / 60000);
-		const int thickCore = 3 * 5;
-		const int mediumCore = 7;
-		const int maxGap = 3;
+		int minAreaThick = Math.Max((int)(150 * S * S), w * h / 4000);
+		int minAreaMedium = Math.Max((int)(40 * S * S), w * h / 60000);
+		int thickCore = (int)Math.Round(3 * 5 * S);
+		int mediumCore = (int)Math.Round(7 * S);
+		int maxGap = (int)Math.Round(3 * S);
 		var label = new int[w * h];
 		var gapDepth = new byte[w * h];
 		var component = new int[w * h];
@@ -375,7 +387,7 @@ internal static class RasterVectorizer
 				}
 
 				double meanDistance = partSimilar.Average(i => distance[i]) / 3.0;
-				if (meanDistance < (thick ? 3.0 : 2.0))
+				if (meanDistance < (thick ? 3.0 : 2.0) * S)
 				{
 					continue;
 				}
@@ -388,7 +400,9 @@ internal static class RasterVectorizer
 					int by0 = part[0] / w, by1 = part.Max(i => i / w);
 					by0 = part.Min(i => i / w);
 					double solidity = part.Count / (double)((bx1 - bx0 + 1) * (by1 - by0 + 1));
-					if (solidity < 0.55)
+
+					// Una mancha mediana de menos de 8 px de lado suele ser texto pequeño borroso, no una muestra.
+					if (solidity < 0.55 || Math.Min(bx1 - bx0, by1 - by0) + 1 < 8 * S)
 					{
 						continue;
 					}
@@ -403,23 +417,8 @@ internal static class RasterVectorizer
 					sb += c & 255;
 				}
 
-				int id = nextComponent;
-				int first = part.Min();
-				List<(double, double)> outline = TraceOutline((x, y) => x >= 0 && y >= 0 && x < w && y < h && component[y * w + x] == id, first % w, first / w);
-				if (outline.Count < 3)
-				{
-					continue;
-				}
-
-				var fill = new RasterFill
-				{
-					Outline = Simplify(outline, 1.0, closed: true),
-					R = (byte)(sr / partSimilar.Count),
-					G = (byte)(sg / partSimilar.Count),
-					B = (byte)(sb / partSimilar.Count)
-				};
-				fill.Holes.AddRange(TraceHoles(component, id, part, w, Math.Max(12, minArea / 2)));
-				drawing.Fills.Add(fill);
+				EmitShapes(drawing, part, w, minArea, minSegment,
+					(byte)(sr / partSimilar.Count), (byte)(sg / partSimilar.Count), (byte)(sb / partSimilar.Count));
 				foreach (int i in partSimilar)
 				{
 					cls[i] = FillPixel;
@@ -532,7 +531,7 @@ internal static class RasterVectorizer
 	/// Sombreados claros: zonas amplias de gris o color pálido algo más oscuras que el papel (quedan por encima del
 	/// umbral de tinta). Se convierten en rellenos debajo de todo; las líneas no se tocan.
 	/// </summary>
-	private static void ExtractTints(RasterDrawing drawing, byte[] cls, bool[] ignored, uint[] argb, byte[] luma, int background, int w, int h)
+	private static void ExtractTints(RasterDrawing drawing, byte[] cls, bool[] ignored, uint[] argb, byte[] luma, int background, int w, int h, double minSegment)
 	{
 		int n = w * h;
 		var mask = new byte[n];
@@ -542,13 +541,13 @@ internal static class RasterVectorizer
 		}
 
 		int[] distance = DistanceToBackground(mask, w, h);
-		int minArea = Math.Max(150, n / 8000);
+		int minArea = Math.Max((int)(150 * S * S), n / 8000);
 		var label = new int[n];
 		var stack = new Stack<int>();
 		int next = 0;
 		for (int start = 0; start < n; start++)
 		{
-			if (mask[start] != Ink || label[start] != 0 || distance[start] < 9)
+			if (mask[start] != Ink || label[start] != 0 || distance[start] < 9 * S)
 			{
 				continue;
 			}
@@ -584,28 +583,12 @@ internal static class RasterVectorizer
 				}
 			}
 
-			if (part.Count < minArea || sumDistance / 3.0 / part.Count < 2.2)
+			if (part.Count < minArea || sumDistance / 3.0 / part.Count < 2.2 * S)
 			{
 				continue;
 			}
 
-			int id = next;
-			int first = part.Min();
-			List<(double, double)> outline = TraceOutline((x, y) => x >= 0 && y >= 0 && x < w && y < h && label[y * w + x] == id, first % w, first / w);
-			if (outline.Count < 3)
-			{
-				continue;
-			}
-
-			var fill = new RasterFill
-			{
-				Outline = Simplify(outline, 1.0, closed: true),
-				R = (byte)(sr / part.Count),
-				G = (byte)(sg / part.Count),
-				B = (byte)(sb / part.Count)
-			};
-			fill.Holes.AddRange(TraceHoles(label, id, part, w, Math.Max(12, minArea / 4)));
-			drawing.Fills.Add(fill);
+			EmitShapes(drawing, part, w, minArea, minSegment, (byte)(sr / part.Count), (byte)(sg / part.Count), (byte)(sb / part.Count));
 		}
 	}
 
@@ -673,8 +656,13 @@ internal static class RasterVectorizer
 		return result;
 	}
 
-	/// <summary>Huecos de una mancha (zonas encerradas que no son de la mancha), como contornos.</summary>
-	private static IEnumerable<List<(double X, double Y)>> TraceHoles(int[] component, int id, List<int> part, int w, int minArea)
+	/// <summary>
+	/// Convierte una mancha en rellenos válidos para Revit: quita las partes de 1 px de ancho (apertura 2×2), cierra
+	/// los "pellizcos" diagonales (dos píxeles que solo se tocan por la esquina harían que el contorno se toque a sí
+	/// mismo), separa las partes conectadas y traza el contorno y los huecos de cada una. Los polígonos simplificados
+	/// se comprueban (sin cruces ni toques) y, si hace falta, se usa el contorno sin simplificar.
+	/// </summary>
+	private static void EmitShapes(RasterDrawing drawing, List<int> part, int w, int minArea, double minSegment, byte r, byte g, byte b)
 	{
 		int x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
 		foreach (int i in part)
@@ -686,69 +674,315 @@ internal static class RasterVectorizer
 			y1 = Math.Max(y1, y);
 		}
 
-		// Rejilla local con 1 px de margen: 1 = mancha, 0 = sin visitar, 2 = exterior.
-		int lw = x1 - x0 + 3, lh = y1 - y0 + 3;
-		var grid = new byte[lw * lh];
+		const int m = 2;
+		int lw = x1 - x0 + 1 + 2 * m, lh = y1 - y0 + 1 + 2 * m;
+		var mask = new bool[lw * lh];
 		foreach (int i in part)
 		{
-			grid[(i / w - y0 + 1) * lw + (i % w - x0 + 1)] = 1;
+			mask[(i / w - y0 + m) * lw + (i % w - x0 + m)] = true;
 		}
 
-		var stack = new Stack<int>();
-		stack.Push(0);
-		grid[0] = 2;
-		while (stack.Count > 0)
+		// 1) Apertura 2×2: solo quedan los píxeles que forman parte de algún bloque 2×2 lleno.
+		var opened = new bool[mask.Length];
+		for (int y = 0; y < lh - 1; y++)
 		{
-			int i = stack.Pop();
-			int x = i % lw, y = i / lw;
-			if (x > 0 && grid[i - 1] == 0) { grid[i - 1] = 2; stack.Push(i - 1); }
-			if (x < lw - 1 && grid[i + 1] == 0) { grid[i + 1] = 2; stack.Push(i + 1); }
-			if (y > 0 && grid[i - lw] == 0) { grid[i - lw] = 2; stack.Push(i - lw); }
-			if (y < lh - 1 && grid[i + lw] == 0) { grid[i + lw] = 2; stack.Push(i + lw); }
-		}
-
-		// Lo que queda a 0 son huecos: cada componente (4 vecinos) suficientemente grande es un contorno interior.
-		var holeId = new int[lw * lh];
-		int nextHole = 0;
-		for (int startIndex = 0; startIndex < grid.Length; startIndex++)
-		{
-			if (grid[startIndex] != 0 || holeId[startIndex] != 0)
+			for (int x = 0; x < lw - 1; x++)
 			{
-				continue;
-			}
-
-			nextHole++;
-			int count = 0;
-			stack.Push(startIndex);
-			holeId[startIndex] = nextHole;
-			while (stack.Count > 0)
-			{
-				int i = stack.Pop();
-				count++;
-				int x = i % lw, y = i / lw;
-				foreach (int j in new[] { x > 0 ? i - 1 : -1, x < lw - 1 ? i + 1 : -1, y > 0 ? i - lw : -1, y < lh - 1 ? i + lw : -1 })
+				int i = y * lw + x;
+				if (mask[i] && mask[i + 1] && mask[i + lw] && mask[i + lw + 1])
 				{
-					if (j >= 0 && grid[j] == 0 && holeId[j] == 0)
+					opened[i] = opened[i + 1] = opened[i + lw] = opened[i + lw + 1] = true;
+				}
+			}
+		}
+
+		mask = opened;
+
+		// 2) Pellizcos diagonales: se rellena uno de los dos píxeles que faltan.
+		for (int pass = 0; pass < 6; pass++)
+		{
+			bool changed = false;
+			for (int y = 0; y < lh - 1; y++)
+			{
+				for (int x = 0; x < lw - 1; x++)
+				{
+					int i = y * lw + x;
+					bool a = mask[i], bR = mask[i + 1], c = mask[i + lw], d = mask[i + lw + 1];
+					if (a && d && !bR && !c)
 					{
-						holeId[j] = nextHole;
-						stack.Push(j);
+						mask[i + 1] = true;
+						changed = true;
+					}
+					else if (bR && c && !a && !d)
+					{
+						mask[i] = true;
+						changed = true;
 					}
 				}
 			}
 
+			if (!changed)
+			{
+				break;
+			}
+		}
+
+		// 3) Cada parte (4 vecinos) con su contorno y sus huecos.
+		var comp = new int[mask.Length];
+		int next = 0;
+		for (int start = 0; start < mask.Length; start++)
+		{
+			if (!mask[start] || comp[start] != 0)
+			{
+				continue;
+			}
+
+			next++;
+			int id = next;
+			int count = Flood4(start, lw, lh, j => mask[j] && comp[j] == 0, j => comp[j] = id);
 			if (count < minArea)
 			{
 				continue;
 			}
 
-			int hid = nextHole;
-			List<(double, double)> loop = TraceOutline((x, y) => x >= 0 && y >= 0 && x < lw && y < lh && holeId[y * lw + x] == hid, startIndex % lw, startIndex / lw);
-			if (loop.Count >= 3)
+			List<(double X, double Y)> outline = FinalizeLoop(
+				TraceOutline((x, y) => x >= 0 && y >= 0 && x < lw && y < lh && comp[y * lw + x] == id, start % lw, start / lw),
+				x0 - m, y0 - m, minSegment);
+			if (outline == null)
 			{
-				yield return Simplify(loop.Select(p => (p.Item1 + x0 - 1, p.Item2 + y0 - 1)).ToList(), 1.0, closed: true);
+				continue;
 			}
+
+			var fill = new RasterFill { Outline = outline, R = r, G = g, B = b };
+
+			// Exterior: todo lo que no es la parte y se alcanza desde el borde de la rejilla.
+			var outside = new bool[mask.Length];
+			Flood4(0, lw, lh, j => comp[j] != id && !outside[j], j => outside[j] = true);
+			var holeId = new int[mask.Length];
+			int nextHole = 0;
+			for (int hs = 0; hs < mask.Length; hs++)
+			{
+				if (comp[hs] == id || outside[hs] || holeId[hs] != 0)
+				{
+					continue;
+				}
+
+				nextHole++;
+				int hid = nextHole;
+				int holeCount = Flood4(hs, lw, lh, j => comp[j] != id && !outside[j] && holeId[j] == 0, j => holeId[j] = hid);
+				if (holeCount < Math.Max(4, minArea / 4))
+				{
+					continue;
+				}
+
+				List<(double X, double Y)> hole = FinalizeLoop(
+					TraceOutline((x, y) => x >= 0 && y >= 0 && x < lw && y < lh && holeId[y * lw + x] == hid, hs % lw, hs / lw),
+					x0 - m, y0 - m, minSegment);
+				if (hole != null && !Crosses(hole, fill.Outline) && fill.Holes.All(other => !Crosses(hole, other)))
+				{
+					fill.Holes.Add(hole);
+				}
+			}
+
+			drawing.Fills.Add(fill);
 		}
 	}
+
+	/// <summary>Relleno por 4 vecinos desde <paramref name="start"/>; devuelve cuántos píxeles marcó.</summary>
+	private static int Flood4(int start, int lw, int lh, Func<int, bool> accept, Action<int> mark)
+	{
+		if (!accept(start))
+		{
+			return 0;
+		}
+
+		var stack = new Stack<int>();
+		mark(start);
+		stack.Push(start);
+		int count = 0;
+		while (stack.Count > 0)
+		{
+			int i = stack.Pop();
+			count++;
+			int x = i % lw, y = i / lw;
+			if (x > 0 && accept(i - 1)) { mark(i - 1); stack.Push(i - 1); }
+			if (x < lw - 1 && accept(i + 1)) { mark(i + 1); stack.Push(i + 1); }
+			if (y > 0 && accept(i - lw)) { mark(i - lw); stack.Push(i - lw); }
+			if (y < lh - 1 && accept(i + lw)) { mark(i + lw); stack.Push(i + lw); }
+		}
+
+		return count;
+	}
+
+	/// <summary>
+	/// Contorno trazado → polígono final en coordenadas de la imagen: simplificado si sigue siendo simple (sin cruces),
+	/// con lados de al menos <paramref name="minSegment"/>; si no, el contorno sin simplificar; null si no sirve.
+	/// </summary>
+	private static List<(double X, double Y)> FinalizeLoop(List<(double, double)> raw, int dx, int dy, double minSegment)
+	{
+		if (raw.Count < 4)
+		{
+			return null;
+		}
+
+		List<(double X, double Y)> points = raw.Select(p => (p.Item1 + dx, p.Item2 + dy)).ToList();
+		foreach (double tolerance in new[] { 1.0, 0.6, 0.0 })
+		{
+			List<(double X, double Y)> candidate = tolerance > 0 ? Simplify(points, tolerance, closed: true) : RemoveCollinear(points);
+			candidate = EnforceMinSegment(candidate, minSegment);
+			if (candidate.Count >= 3 && Math.Abs(SignedArea(candidate)) > 1.0 && IsSimple(candidate))
+			{
+				return candidate;
+			}
+		}
+
+		return null;
+	}
+
+	private static List<(double X, double Y)> RemoveCollinear(List<(double X, double Y)> points)
+	{
+		var result = new List<(double X, double Y)>();
+		int n = points.Count;
+		for (int i = 0; i < n; i++)
+		{
+			var prev = points[(i - 1 + n) % n];
+			var cur = points[i];
+			var next = points[(i + 1) % n];
+			double cross = (cur.X - prev.X) * (next.Y - cur.Y) - (cur.Y - prev.Y) * (next.X - cur.X);
+			if (Math.Abs(cross) > 1E-9)
+			{
+				result.Add(cur);
+			}
+		}
+
+		return result;
+	}
+
+	private static List<(double X, double Y)> EnforceMinSegment(List<(double X, double Y)> points, double minSegment)
+	{
+		if (minSegment <= 1.0 || points.Count < 3)
+		{
+			return points;
+		}
+
+		var result = new List<(double X, double Y)> { points[0] };
+		for (int i = 1; i < points.Count; i++)
+		{
+			var last = result[result.Count - 1];
+			if (Math.Sqrt((points[i].X - last.X) * (points[i].X - last.X) + (points[i].Y - last.Y) * (points[i].Y - last.Y)) >= minSegment)
+			{
+				result.Add(points[i]);
+			}
+		}
+
+		while (result.Count > 2)
+		{
+			var a = result[result.Count - 1];
+			var b = result[0];
+			if (Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y)) >= minSegment)
+			{
+				break;
+			}
+
+			result.RemoveAt(result.Count - 1);
+		}
+
+		return result;
+	}
+
+	private static double SignedArea(List<(double X, double Y)> points)
+	{
+		double area = 0;
+		for (int i = 0; i < points.Count; i++)
+		{
+			var a = points[i];
+			var b = points[(i + 1) % points.Count];
+			area += a.X * b.Y - b.X * a.Y;
+		}
+
+		return area / 2.0;
+	}
+
+	/// <summary>¿El polígono cerrado no se cruza ni se toca a sí mismo (ni tiene "picos" que vuelven atrás)?</summary>
+	private static bool IsSimple(List<(double X, double Y)> p)
+	{
+		int n = p.Count;
+		for (int i = 0; i < n; i++)
+		{
+			var a = p[(i - 1 + n) % n];
+			var b = p[i];
+			var c = p[(i + 1) % n];
+			double cross = (b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X);
+			double dot = (b.X - a.X) * (c.X - b.X) + (b.Y - a.Y) * (c.Y - b.Y);
+			if (Math.Abs(cross) < 1E-9 && dot < 0)
+			{
+				return false;
+			}
+		}
+
+		for (int i = 0; i < n; i++)
+		{
+			var a1 = p[i];
+			var a2 = p[(i + 1) % n];
+			for (int j = i + 2; j < n; j++)
+			{
+				if (i == 0 && j == n - 1)
+				{
+					continue;
+				}
+
+				if (SegmentsTouch(a1, a2, p[j], p[(j + 1) % n]))
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>¿Algún lado de un polígono toca o cruza algún lado del otro?</summary>
+	private static bool Crosses(List<(double X, double Y)> a, List<(double X, double Y)> b)
+	{
+		for (int i = 0; i < a.Count; i++)
+		{
+			var a1 = a[i];
+			var a2 = a[(i + 1) % a.Count];
+			for (int j = 0; j < b.Count; j++)
+			{
+				if (SegmentsTouch(a1, a2, b[j], b[(j + 1) % b.Count]))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private static bool SegmentsTouch((double X, double Y) p1, (double X, double Y) p2, (double X, double Y) q1, (double X, double Y) q2)
+	{
+		if (Math.Max(p1.X, p2.X) < Math.Min(q1.X, q2.X) - 1E-9 || Math.Max(q1.X, q2.X) < Math.Min(p1.X, p2.X) - 1E-9
+			|| Math.Max(p1.Y, p2.Y) < Math.Min(q1.Y, q2.Y) - 1E-9 || Math.Max(q1.Y, q2.Y) < Math.Min(p1.Y, p2.Y) - 1E-9)
+		{
+			return false;
+		}
+
+		double d1 = Orient(q1, q2, p1), d2 = Orient(q1, q2, p2), d3 = Orient(p1, p2, q1), d4 = Orient(p1, p2, q2);
+		if (((d1 > 1E-9 && d2 < -1E-9) || (d1 < -1E-9 && d2 > 1E-9)) && ((d3 > 1E-9 && d4 < -1E-9) || (d3 < -1E-9 && d4 > 1E-9)))
+		{
+			return true;
+		}
+
+		return (Math.Abs(d1) <= 1E-9 && OnSegment(q1, q2, p1)) || (Math.Abs(d2) <= 1E-9 && OnSegment(q1, q2, p2))
+			|| (Math.Abs(d3) <= 1E-9 && OnSegment(p1, p2, q1)) || (Math.Abs(d4) <= 1E-9 && OnSegment(p1, p2, q2));
+	}
+
+	private static double Orient((double X, double Y) a, (double X, double Y) b, (double X, double Y) c) =>
+		(b.X - a.X) * (c.Y - a.Y) - (b.Y - a.Y) * (c.X - a.X);
+
+	private static bool OnSegment((double X, double Y) a, (double X, double Y) b, (double X, double Y) p) =>
+		p.X >= Math.Min(a.X, b.X) - 1E-9 && p.X <= Math.Max(a.X, b.X) + 1E-9 && p.Y >= Math.Min(a.Y, b.Y) - 1E-9 && p.Y <= Math.Max(a.Y, b.Y) + 1E-9;
 
 	/// <summary>
 	/// Contorno exterior de una región (seguimiento de borde de Moore), empezando en su píxel superior izquierdo
@@ -819,7 +1053,7 @@ internal static class RasterVectorizer
 
 		foreach (List<int> path in TracePaths(skeleton, w, h))
 		{
-			if (path.Count < 4)
+			if (path.Count < 4 * S)
 			{
 				continue;
 			}
@@ -827,12 +1061,13 @@ internal static class RasterVectorizer
 			var points = path.Select(i => ((double)(i % w), (double)(i / w))).ToList();
 			List<(double X, double Y)> simplified = Simplify(points, tolerance, closed: false);
 
-			// Color y grosor del trazo (medias sobre sus píxeles).
+			// Color y grosor del trazo. El color de cada punto es el del píxel más oscuro a su alrededor: en una imagen
+			// comprimida o de baja resolución una línea fina se ve más clara que la tinta real.
 			long sr = 0, sg = 0, sb = 0;
 			double thickness = 0;
 			foreach (int i in path)
 			{
-				uint c = argb[i];
+				uint c = DarkestAround(argb, cls, i, w, h);
 				sr += (c >> 16) & 255;
 				sg += (c >> 8) & 255;
 				sb += c & 255;
@@ -854,6 +1089,520 @@ internal static class RasterVectorizer
 				drawing.Lines.Add(new RasterLine { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, R = r, G = g, B = b, Thickness = thickness });
 			}
 		}
+
+		drawing.Lines = RemoveStubs(MergeCollinear(drawing.Lines));
+	}
+
+	/// <summary>
+	/// Líneas rectas a 0°, 90°, 45° y 135° (las de casi todo plano: muros, cotas, rayados) detectadas directamente
+	/// como rachas largas de tinta: las rachas paralelas contiguas forman una banda (el grosor de la línea) y cada banda
+	/// es un segmento limpio. Sus píxeles se quitan de la tinta; el resto (curvas, otros ángulos) sigue al esqueleto.
+	/// Así los cruces de un rayado no parten las líneas en zigzag.
+	/// </summary>
+	private static void ExtractStraightRuns(RasterDrawing drawing, byte[] cls, uint[] argb, int w, int h)
+	{
+		// Largo mínimo: más que el trazo de una letra (las diagonales, más aún: las letras redondas tienen tramos a 45°).
+		int minRunAxis = Math.Max(12, Math.Max(w, h) / 120);
+		int minRunDiagonal = Math.Max(18, Math.Max(w, h) / 80);
+		int maxThickness = (int)Math.Round(6 * S);
+		// Píxeles ya usados por una línea de otra dirección: cuentan como tinta para que una línea siga a través de un
+		// cruce, pero no se vuelven a usar.
+		var taken = new bool[w * h];
+		// (dx, dy): dirección de la racha. Primero horizontales y verticales.
+		foreach (var (dx, dy) in new[] { (1, 0), (0, 1), (1, 1), (1, -1) })
+		{
+			var remove = new List<int>();
+			int minRun = dx != 0 && dy != 0 ? minRunDiagonal : minRunAxis;
+			int maxGap = dx != 0 && dy != 0 ? 1 : 0;
+
+			// Posición (x, y) de un punto de la recta K en T, y comprobación de que la racha es de una línea fina: en una
+			// fila que pasa por lo alto de unas letras o por el borde de una mancha, la tinta sigue en perpendicular
+			// (los trazos de las letras) en buena parte del recorrido.
+			(int X, int Y) At(int k, int t) => dy == 0 ? (t, k) : dx == 0 ? (k, t) : dy == 1 ? (t, t - k) : (t, k - t);
+			int px = dy == 0 ? 0 : dx == 0 ? 1 : 1, py = dy == 0 ? 1 : dx == 0 ? 0 : (dy == 1 ? -1 : 1);
+			bool InkXY(int x, int y) => x >= 0 && y >= 0 && x < w && y < h && (cls[y * w + x] == Ink || taken[y * w + x]);
+			bool IsThinRun(int k, int t0, int t1)
+			{
+				int thick = 0, count = 0;
+				for (int t = t0; t <= t1; t++)
+				{
+					var (x, y) = At(k, t);
+					if (!InkXY(x, y))
+					{
+						continue;
+					}
+
+					int extent = 1;
+					for (int s2 = 1; s2 <= maxThickness + 2 && InkXY(x + px * s2, y + py * s2); s2++)
+					{
+						extent++;
+					}
+
+					for (int s2 = 1; s2 <= maxThickness + 2 && InkXY(x - px * s2, y - py * s2); s2++)
+					{
+						extent++;
+					}
+
+					count++;
+					if (extent > maxThickness + 1)
+					{
+						thick++;
+					}
+				}
+
+				return count > 0 && thick <= count * 0.3;
+			}
+			var runs = new List<(int K, int T0, int T1)>();
+			// Recorre cada recta de la familia: se identifica por K y se avanza en T.
+			int kMin, kMax;
+			if (dy == 0) { kMin = 0; kMax = h - 1; }
+			else if (dx == 0) { kMin = 0; kMax = w - 1; }
+			else if (dy == 1) { kMin = -(h - 1); kMax = w - 1; }
+			else { kMin = 0; kMax = w + h - 2; }
+
+			for (int k = kMin; k <= kMax; k++)
+			{
+				int runStart = int.MinValue, lastInk = int.MinValue;
+				for (int t = 0; t < Math.Max(w, h); t++)
+				{
+					int x, y;
+					if (dy == 0) { x = t; y = k; }
+					else if (dx == 0) { x = k; y = t; }
+					else if (dy == 1) { x = t; y = t - k; }
+					else { x = t; y = k - t; }
+
+					if (x < 0 || y < 0 || x >= w || y >= h)
+					{
+						continue;
+					}
+
+					bool ink = cls[y * w + x] == Ink || taken[y * w + x];
+					if (ink)
+					{
+						// Horizontales y verticales: sin huecos (una fila que pasa por lo alto de varias letras tiene huecos
+						// de 1 px entre ellas); diagonales: hueco de 1 px (escalonado del antialiasing).
+						if (runStart == int.MinValue || t - lastInk > maxGap + 1)
+						{
+							if (runStart != int.MinValue && lastInk - runStart + 1 >= minRun && IsThinRun(k, runStart, lastInk))
+							{
+								runs.Add((k, runStart, lastInk));
+							}
+
+							runStart = t;
+						}
+
+						lastInk = t;
+					}
+				}
+
+				if (runStart != int.MinValue && lastInk - runStart + 1 >= minRun && IsThinRun(k, runStart, lastInk))
+				{
+					runs.Add((k, runStart, lastInk));
+				}
+			}
+
+			// Bandas: rachas en rectas vecinas (K ±1) que se solapan al menos un 70 %.
+			runs.Sort((a, b) => a.K != b.K ? a.K.CompareTo(b.K) : a.T0.CompareTo(b.T0));
+			var parent = Enumerable.Range(0, runs.Count).ToArray();
+			int Find(int q)
+			{
+				while (parent[q] != q)
+				{
+					parent[q] = parent[parent[q]];
+					q = parent[q];
+				}
+
+				return q;
+			}
+
+			int firstOfPrevious = 0;
+			for (int a = 0; a < runs.Count; a++)
+			{
+				while (firstOfPrevious < a && runs[firstOfPrevious].K < runs[a].K - 1)
+				{
+					firstOfPrevious++;
+				}
+
+				for (int b = firstOfPrevious; b < a; b++)
+				{
+					if (runs[b].K != runs[a].K - 1)
+					{
+						continue;
+					}
+
+					int overlap = Math.Min(runs[a].T1, runs[b].T1) - Math.Max(runs[a].T0, runs[b].T0) + 1;
+					int shorter = Math.Min(runs[a].T1 - runs[a].T0, runs[b].T1 - runs[b].T0) + 1;
+					if (overlap >= shorter * 0.7)
+					{
+						parent[Find(a)] = Find(b);
+					}
+				}
+			}
+
+			double diagonal = dx != 0 && dy != 0 ? Math.Sqrt(0.5) : 1.0;
+			foreach (var band in Enumerable.Range(0, runs.Count).GroupBy(Find))
+			{
+				List<(int K, int T0, int T1)> members = band.Select(q => runs[q]).ToList();
+
+				// Rachas principales: las largas (las de los bordes con antialiasing o el rayado vecino son más cortas).
+				int longest = members.Max(m => m.T1 - m.T0);
+				var main = members.Where(m => m.T1 - m.T0 >= longest * 0.6).ToList();
+				int thicknessPx = main.Select(m => m.K).Distinct().Count();
+				if (thicknessPx * diagonal > maxThickness)
+				{
+					continue; // mancha gruesa: no es una línea
+				}
+
+				int t0 = main.Min(m => m.T0), t1 = main.Max(m => m.T1);
+				double kc = main.Sum(m => m.K * (double)(m.T1 - m.T0 + 1)) / main.Sum(m => (double)(m.T1 - m.T0 + 1));
+
+				(double X, double Y) P(double t)
+				{
+					if (dy == 0) return (t, kc);
+					if (dx == 0) return (kc, t);
+					if (dy == 1) return (t, t - kc);
+					return (t, kc - t);
+				}
+
+				var (x1, y1) = P(t0);
+				var (x2, y2) = P(t1);
+				// Solo se quitan los píxeles de la línea (rachas principales y su borde): una racha vecina que solo se unió
+				// por tocarla (el alma de una viga bajo su ala) sigue siendo tinta para otras líneas.
+				int mainLow = main.Min(m => m.K) - 1, mainHigh = main.Max(m => m.K) + 1;
+				long sr = 0, sg = 0, sb = 0;
+				int samples = 0;
+				foreach (var m in members.Where(m => m.K >= mainLow && m.K <= mainHigh && m.T0 >= t0 - 2 && m.T1 <= t1 + 2))
+				{
+					for (int t = m.T0; t <= m.T1; t++)
+					{
+						int x, y;
+						if (dy == 0) { x = t; y = m.K; }
+						else if (dx == 0) { x = m.K; y = t; }
+						else if (dy == 1) { x = t; y = t - m.K; }
+						else { x = t; y = m.K - t; }
+
+						if (x < 0 || y < 0 || x >= w || y >= h)
+						{
+							continue;
+						}
+
+						int i = y * w + x;
+						if (cls[i] == Ink)
+						{
+							remove.Add(i);
+							uint c = DarkestAround(argb, cls, i, w, h);
+							sr += (c >> 16) & 255;
+							sg += (c >> 8) & 255;
+							sb += c & 255;
+							samples++;
+						}
+					}
+				}
+
+				if (samples == 0)
+				{
+					continue;
+				}
+
+				drawing.Lines.Add(new RasterLine
+				{
+					X1 = x1,
+					Y1 = y1,
+					X2 = x2,
+					Y2 = y2,
+					R = (byte)(sr / samples),
+					G = (byte)(sg / samples),
+					B = (byte)(sb / samples),
+					Thickness = Math.Max(1.0, thicknessPx * diagonal)
+				});
+			}
+
+			foreach (int i in remove)
+			{
+				cls[i] = Background;
+				taken[i] = true;
+			}
+		}
+
+		// Restos sueltos de las bandas (bordes con antialiasing) no deben volverse trazos.
+		RemoveSpecks(cls, w, h, (int)Math.Round(6 * S * S));
+	}
+
+	/// <summary>Color del píxel de tinta más oscuro en el entorno 3×3.</summary>
+	private static uint DarkestAround(uint[] argb, byte[] cls, int i, int w, int h)
+	{
+		int x = i % w, y = i / w;
+		uint best = argb[i];
+		int bestLuma = Luma(best);
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				int nx = x + dx, ny = y + dy;
+				if (nx < 0 || ny < 0 || nx >= w || ny >= h || cls[ny * w + nx] != Ink)
+				{
+					continue;
+				}
+
+				uint c = argb[ny * w + nx];
+				int l = Luma(c);
+				if (l < bestLuma)
+				{
+					best = c;
+					bestLuma = l;
+				}
+			}
+		}
+
+		return best;
+	}
+
+	private static int Luma(uint c) => (int)((((c >> 16) & 255) * 299 + ((c >> 8) & 255) * 587 + (c & 255) * 114) / 1000);
+
+	/// <summary>
+	/// Une los tramos que están sobre una misma recta (mismo ángulo ±3°, a menos de 1.2 px de la recta, con huecos de
+	/// hasta 2.5 px y color y grosor parecidos) en un solo segmento ajustado por mínimos cuadrados: los rayados y las
+	/// líneas que el esqueleto corta en cada cruce vuelven a ser rectas continuas.
+	/// </summary>
+	private static List<RasterLine> MergeCollinear(List<RasterLine> lines)
+	{
+		int n = lines.Count;
+		var angle = new double[n];
+		var rho = new double[n];
+		var length = new double[n];
+		var buckets = new Dictionary<(int, int), List<int>>();
+		const double angleBin = 2.0, rhoBin = 2.0;
+		for (int k = 0; k < n; k++)
+		{
+			RasterLine l = lines[k];
+			double dx = l.X2 - l.X1, dy = l.Y2 - l.Y1;
+			length[k] = Math.Sqrt(dx * dx + dy * dy);
+			double a = Math.Atan2(dy, dx) * 180.0 / Math.PI;
+			a = ((a % 180.0) + 180.0) % 180.0;
+			angle[k] = a;
+			double rad = a * Math.PI / 180.0;
+			rho[k] = -(l.X1 + l.X2) / 2.0 * Math.Sin(rad) + (l.Y1 + l.Y2) / 2.0 * Math.Cos(rad);
+			var key = ((int)Math.Floor(a / angleBin), (int)Math.Floor(rho[k] / rhoBin));
+			if (!buckets.TryGetValue(key, out List<int> list))
+			{
+				list = new List<int>();
+				buckets[key] = list;
+			}
+
+			list.Add(k);
+		}
+
+		var parent = Enumerable.Range(0, n).ToArray();
+		int Find(int k)
+		{
+			while (parent[k] != k)
+			{
+				parent[k] = parent[parent[k]];
+				k = parent[k];
+			}
+
+			return k;
+		}
+
+		int angleBins = (int)(180.0 / angleBin);
+		for (int k = 0; k < n; k++)
+		{
+			if (length[k] < 2.0)
+			{
+				continue;
+			}
+
+			int ab = (int)Math.Floor(angle[k] / angleBin), rb = (int)Math.Floor(rho[k] / rhoBin);
+			for (int da = -1; da <= 1; da++)
+			{
+				int a2 = ab + da;
+				bool wrapped = a2 < 0 || a2 >= angleBins;
+				a2 = (a2 + angleBins) % angleBins;
+				for (int dr = -1; dr <= 1; dr++)
+				{
+					// Al dar la vuelta (0° ↔ 180°) la distancia ρ cambia de signo.
+					int r2 = wrapped ? -rb - 1 + dr : rb + dr;
+					if (!buckets.TryGetValue((a2, r2), out List<int> candidates))
+					{
+						continue;
+					}
+
+					foreach (int j in candidates)
+					{
+						if (j <= k || length[j] < 2.0 || Find(j) == Find(k) || !Collinear(lines[k], lines[j]))
+						{
+							continue;
+						}
+
+						parent[Find(j)] = Find(k);
+					}
+				}
+			}
+		}
+
+		var result = new List<RasterLine>();
+		foreach (var group in Enumerable.Range(0, n).GroupBy(Find))
+		{
+			List<RasterLine> members = group.Select(k => lines[k]).ToList();
+			RasterLine merged = members.Count > 1 ? FitLine(members) : null;
+			if (merged != null)
+			{
+				result.Add(merged);
+			}
+			else
+			{
+				result.AddRange(members);
+			}
+		}
+
+		return result;
+	}
+
+	private static bool Collinear(RasterLine a, RasterLine b)
+	{
+		double ax = a.X2 - a.X1, ay = a.Y2 - a.Y1;
+		double la = Math.Sqrt(ax * ax + ay * ay);
+		double bx = b.X2 - b.X1, by = b.Y2 - b.Y1;
+		double lb = Math.Sqrt(bx * bx + by * by);
+		if (la < 1E-9 || lb < 1E-9)
+		{
+			return false;
+		}
+
+		double ux = ax / la, uy = ay / la;
+		double cos = Math.Abs((ux * bx + uy * by) / lb);
+		if (cos < Math.Cos(3.0 * Math.PI / 180.0))
+		{
+			return false;
+		}
+
+		// Distancia de los extremos de b a la recta de a.
+		double d1 = Math.Abs(-(b.X1 - a.X1) * uy + (b.Y1 - a.Y1) * ux);
+		double d2 = Math.Abs(-(b.X2 - a.X2) * uy + (b.Y2 - a.Y2) * ux);
+		if (d1 > 1.2 * S || d2 > 1.2 * S)
+		{
+			return false;
+		}
+
+		// Hueco entre los dos tramos medido sobre la recta.
+		double t1 = (b.X1 - a.X1) * ux + (b.Y1 - a.Y1) * uy, t2 = (b.X2 - a.X1) * ux + (b.Y2 - a.Y1) * uy;
+		double bMin = Math.Min(t1, t2), bMax = Math.Max(t1, t2);
+		double gap = Math.Max(bMin - la, -bMax);
+		if (gap > 2.5 * S)
+		{
+			return false;
+		}
+
+		int colorDistance = Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
+		double thick = Math.Max(a.Thickness, b.Thickness) / Math.Max(1.0, Math.Min(a.Thickness, b.Thickness));
+		return colorDistance < 120 && thick < 2.2;
+	}
+
+	/// <summary>Recta de mínimos cuadrados por los extremos de los tramos (ponderados por su largo); null si no encajan.</summary>
+	private static RasterLine FitLine(List<RasterLine> members)
+	{
+		double sw = 0, sx = 0, sy = 0;
+		foreach (RasterLine l in members)
+		{
+			double len = Math.Max(0.5, Math.Sqrt((l.X2 - l.X1) * (l.X2 - l.X1) + (l.Y2 - l.Y1) * (l.Y2 - l.Y1)));
+			sw += 2 * len;
+			sx += (l.X1 + l.X2) * len;
+			sy += (l.Y1 + l.Y2) * len;
+		}
+
+		double mx = sx / sw, my = sy / sw;
+		double sxx = 0, syy = 0, sxy = 0;
+		foreach (RasterLine l in members)
+		{
+			double len = Math.Max(0.5, Math.Sqrt((l.X2 - l.X1) * (l.X2 - l.X1) + (l.Y2 - l.Y1) * (l.Y2 - l.Y1)));
+			foreach (var (px, py) in new[] { (l.X1, l.Y1), (l.X2, l.Y2) })
+			{
+				sxx += (px - mx) * (px - mx) * len;
+				syy += (py - my) * (py - my) * len;
+				sxy += (px - mx) * (py - my) * len;
+			}
+		}
+
+		double theta = 0.5 * Math.Atan2(2 * sxy, sxx - syy);
+		double ux = Math.Cos(theta), uy = Math.Sin(theta);
+		double tMin = double.MaxValue, tMax = double.MinValue, worst = 0, totalLength = 0, sr = 0, sg = 0, sbl = 0, st = 0;
+		foreach (RasterLine l in members)
+		{
+			double len = Math.Sqrt((l.X2 - l.X1) * (l.X2 - l.X1) + (l.Y2 - l.Y1) * (l.Y2 - l.Y1));
+			foreach (var (px, py) in new[] { (l.X1, l.Y1), (l.X2, l.Y2) })
+			{
+				double t = (px - mx) * ux + (py - my) * uy;
+				tMin = Math.Min(tMin, t);
+				tMax = Math.Max(tMax, t);
+				worst = Math.Max(worst, Math.Abs(-(px - mx) * uy + (py - my) * ux));
+			}
+
+			totalLength += len;
+			sr += l.R * len;
+			sg += l.G * len;
+			sbl += l.B * len;
+			st += l.Thickness * len;
+		}
+
+		if (worst > 1.5 * S || totalLength <= 0)
+		{
+			return null;
+		}
+
+		double x1 = mx + ux * tMin, y1 = my + uy * tMin, x2 = mx + ux * tMax, y2 = my + uy * tMax;
+		Straighten(ref x1, ref y1, ref x2, ref y2);
+		return new RasterLine
+		{
+			X1 = x1,
+			Y1 = y1,
+			X2 = x2,
+			Y2 = y2,
+			R = (byte)(sr / totalLength),
+			G = (byte)(sg / totalLength),
+			B = (byte)(sbl / totalLength),
+			Thickness = st / totalLength
+		};
+	}
+
+	/// <summary>Quita los tramos cortos (≤ 5 px) que quedan pegados a una línea larga (restos de los cruces).</summary>
+	private static List<RasterLine> RemoveStubs(List<RasterLine> lines)
+	{
+		double stub = 5.0 * S, near = 1.8 * S;
+		const int cell = 16;
+		var grid = new Dictionary<(int, int), List<RasterLine>>();
+		double Len(RasterLine l) => Math.Sqrt((l.X2 - l.X1) * (l.X2 - l.X1) + (l.Y2 - l.Y1) * (l.Y2 - l.Y1));
+		foreach (RasterLine l in lines.Where(l => Len(l) >= 12.0 * S))
+		{
+			int cx1 = (int)Math.Floor(Math.Min(l.X1, l.X2) / cell), cx2 = (int)Math.Floor(Math.Max(l.X1, l.X2) / cell);
+			int cy1 = (int)Math.Floor(Math.Min(l.Y1, l.Y2) / cell), cy2 = (int)Math.Floor(Math.Max(l.Y1, l.Y2) / cell);
+			for (int cx = cx1; cx <= cx2; cx++)
+			{
+				for (int cy = cy1; cy <= cy2; cy++)
+				{
+					if (!grid.TryGetValue((cx, cy), out List<RasterLine> list))
+					{
+						list = new List<RasterLine>();
+						grid[(cx, cy)] = list;
+					}
+
+					list.Add(l);
+				}
+			}
+		}
+
+		bool NearLong(double x, double y)
+		{
+			if (!grid.TryGetValue(((int)Math.Floor(x / cell), (int)Math.Floor(y / cell)), out List<RasterLine> list))
+			{
+				return false;
+			}
+
+			return list.Any(l => PointLineDistance((x, y), (l.X1, l.Y1), (l.X2, l.Y2)) <= near
+				&& (x - l.X1) * (l.X2 - l.X1) + (y - l.Y1) * (l.Y2 - l.Y1) >= -near * Len(l)
+				&& (x - l.X2) * (l.X1 - l.X2) + (y - l.Y2) * (l.Y1 - l.Y2) >= -near * Len(l));
+		}
+
+		return lines.Where(l => Len(l) > stub || !(NearLong(l.X1, l.Y1) && NearLong(l.X2, l.Y2))).ToList();
 	}
 
 	/// <summary>Si el segmento es casi horizontal o vertical (±1.5°), se endereza.</summary>

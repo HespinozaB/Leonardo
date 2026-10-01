@@ -77,6 +77,9 @@ internal sealed class PdfFillShape
 {
 	public List<List<Pt>> Loops = new List<List<Pt>>();
 
+	/// <summary>El primer contorno es el exterior y los demás son huecos (rellenos de imágenes).</summary>
+	public bool OuterFirst;
+
 	public byte R;
 
 	public byte G;

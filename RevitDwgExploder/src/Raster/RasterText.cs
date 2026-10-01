@@ -78,7 +78,7 @@ internal static class RasterText
 			bool horizontal = Math.Abs(line.Y2 - line.Y1) < 0.5;
 			if (length >= minLength || (horizontal && length >= minAxisLength))
 			{
-				EraseSegment(gray, w, h, line.X1, line.Y1, line.X2, line.Y2, line.Thickness / 2.0 + 1.5);
+				EraseSegment(gray, w, h, line.X1, line.Y1, line.X2, line.Y2, Math.Min(2.0, line.Thickness / 2.0 + 1.0));
 			}
 		}
 
@@ -298,7 +298,7 @@ internal static class RasterText
 		// Código de plano exacto (C02, S05, A101): aunque la confianza sea baja, la lectura es casi segura.
 		if (System.Text.RegularExpressions.Regex.IsMatch(FixCodes(trimmed), @"^[A-Z]\d{2,3}$"))
 		{
-			return confidence >= 25f;
+			return confidence >= 50f;
 		}
 
 		var alnum = trimmed.Where(char.IsLetterOrDigit).ToList();
@@ -316,12 +316,32 @@ internal static class RasterText
 		bool hasVowel = alnum.Any(c => "AEIOUaeiouÁÉÍÓÚáéíóú".IndexOf(c) >= 0);
 		if (alnum.Count <= 4)
 		{
-			// Corto: debe parecer un código (letra(s) + número) o tener confianza alta.
-			bool code = hasDigit && alnum.Any(char.IsLetter) || alnum.All(char.IsDigit);
-			return code ? confidence >= 60f : confidence >= 85f && (hasVowel || alnum.All(char.IsUpper));
+			// Corto: debe parecer un código (C07, A-35, P7), una medida (16", 1/2, 2.10) o una palabra leída con
+			// mucha confianza; los restos de rayados ("1 > q", "ve") no pasan.
+			string compact = new string(trimmed.Where(c => !char.IsWhiteSpace(c)).ToArray());
+			bool code = System.Text.RegularExpressions.Regex.IsMatch(compact, @"^[A-Z]{1,3}[-.]?\d{1,4}[A-Za-z]?[.,:]?$");
+			bool measure = System.Text.RegularExpressions.Regex.IsMatch(compact, @"^[+±]?\d+([.,/]\d+)?(°|""|'|m|cm|mm)?[.,:]?$");
+			bool word = alnum.All(char.IsLetter) && trimmed.All(c => char.IsLetter(c) || c == ' ' || c == '.' || c == ':');
+
+			// Palabras cortas en minúsculas ("cos", "on") o mezcladas ("Ho"): en un plano casi siempre son lecturas de
+			// rayados o letras sueltas; las de 2 letras necesitan una lectura casi segura.
+			if (alnum.Any(char.IsLower) && alnum.Any(char.IsUpper))
+			{
+				return false;
+			}
+
+			float wordConfidence = alnum.All(char.IsLower) || alnum.Count <= 2 ? 95f : 85f;
+			return code ? confidence >= 60f : measure ? confidence >= 80f : word && confidence >= wordConfidence && (hasVowel || alnum.All(char.IsUpper));
 		}
 
 		return (hasVowel || hasDigit) && confidence >= 60f;
+	}
+
+	/// <summary>¿La caja es lo bastante ancha para ese texto? (una caja de 3 px no puede tener "51").</summary>
+	public static bool FitsBox(RasterTextLine line)
+	{
+		int characters = line.Text.Count(c => !char.IsWhiteSpace(c));
+		return line.X2 - line.X1 >= 0.4 * (line.Y2 - line.Y1) * characters;
 	}
 
 	/// <summary>
@@ -399,21 +419,33 @@ internal static class RasterText
 	public static List<RasterTextLine> Merge(IEnumerable<RasterTextLine> candidates)
 	{
 		var accepted = new List<RasterTextLine>();
-		foreach (RasterTextLine line in candidates.OrderByDescending(l => l.Confidence))
+		foreach (RasterTextLine line in candidates.OrderByDescending(Score))
 		{
-			bool overlaps = accepted.Any(a =>
+			// Misma lectura con y sin tildes (el modelo de inglés no las conoce): se queda la que las tiene.
+			RasterTextLine same = accepted.FirstOrDefault(a => Overlap(a, line) && StripAccents(a.Text) == StripAccents(line.Text));
+			if (same != null)
 			{
-				int ix = Math.Min(a.X2, line.X2) - Math.Max(a.X1, line.X1);
-				int iy = Math.Min(a.Y2, line.Y2) - Math.Max(a.Y1, line.Y1);
-				if (ix <= 0 || iy <= 0)
+				if (AccentCount(line.Text) > AccentCount(same.Text))
 				{
-					return false;
+					same.Text = line.Text;
 				}
 
-				double smaller = Math.Min((a.X2 - a.X1) * (double)(a.Y2 - a.Y1), (line.X2 - line.X1) * (double)(line.Y2 - line.Y1));
-				return ix * (double)iy > smaller * 0.5;
-			});
-			if (!overlaps)
+				continue;
+			}
+
+			// Un fragmento ("ES") no debe tapar la línea completa que lo contiene ("WICK WEEPHOLES"): la lectura mucho
+			// más grande lo sustituye si su puntuación no es muy inferior.
+			List<RasterTextLine> overlapping = accepted.Where(a => Overlap(a, line)).ToList();
+			if (overlapping.Count > 0 && overlapping.All(a => Area(line) > 2.5 * Area(a) && Score(line) >= Score(a) - 20)
+				&& overlapping.Sum(a => a.Text.Length) <= line.Text.Length + 2)
+			{
+				int index = accepted.IndexOf(overlapping[0]);
+				accepted.RemoveAll(overlapping.Contains);
+				accepted.Insert(Math.Min(index, accepted.Count), line);
+				continue;
+			}
+
+			if (!accepted.Any(a => Overlap(a, line)))
 			{
 				accepted.Add(line);
 			}
@@ -421,6 +453,186 @@ internal static class RasterText
 
 		return accepted;
 	}
+
+	/// <summary>Palabra leída por el OCR (píxeles de la imagen original).</summary>
+	internal readonly struct OcrWord
+	{
+		public readonly string Text;
+		public readonly int X1, Y1, X2, Y2;
+		public readonly float Confidence;
+		public readonly int LineId;
+		public readonly double BaselineY;
+
+		public OcrWord(string text, int x1, int y1, int x2, int y2, float confidence, int lineId, double baselineY)
+		{
+			Text = text;
+			X1 = x1;
+			Y1 = y1;
+			X2 = x2;
+			Y2 = y2;
+			Confidence = confidence;
+			LineId = lineId;
+			BaselineY = baselineY;
+		}
+	}
+
+	/// <summary>
+	/// Agrupa las palabras en líneas como el OCR, pero corta una línea donde hay un hueco grande (más de 1.5 veces la
+	/// altura del texto): así un título y una etiqueta vecina ("DETALL D18" … "C01") no se mezclan y la lectura dudosa de
+	/// una no arrastra a la otra.
+	/// </summary>
+	public static List<RasterTextLine> GroupWords(IEnumerable<OcrWord> words)
+	{
+		var result = new List<RasterTextLine>();
+		foreach (var line in words.Where(wd => !string.IsNullOrWhiteSpace(wd.Text)).GroupBy(wd => wd.LineId))
+		{
+			List<OcrWord> sorted = line.OrderBy(wd => wd.X1).ToList();
+			double height = sorted.Select(wd => wd.Y2 - wd.Y1).OrderBy(v => v).ElementAt(sorted.Count / 2);
+			var piece = new List<OcrWord>();
+			void Flush()
+			{
+				if (piece.Count == 0)
+				{
+					return;
+				}
+
+				result.Add(new RasterTextLine
+				{
+					Text = string.Join(" ", piece.Select(wd => wd.Text.Trim())),
+					Confidence = piece.Average(wd => wd.Confidence),
+					X1 = piece.Min(wd => wd.X1),
+					Y1 = piece.Min(wd => wd.Y1),
+					X2 = piece.Max(wd => wd.X2),
+					Y2 = piece.Max(wd => wd.Y2),
+					BaselineY = piece.Average(wd => wd.BaselineY)
+				});
+				piece.Clear();
+			}
+
+			foreach (OcrWord word in sorted)
+			{
+				if (piece.Count > 0 && word.X1 - piece[piece.Count - 1].X2 > Math.Max(6.0, height * 1.5))
+				{
+					Flush();
+				}
+
+				piece.Add(word);
+			}
+
+			Flush();
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// Organiza las lecturas de página: cada zona de texto queda una vez (la de mejor puntuación). Si esa lectura es
+	/// segura (creíble y puntuación ≥ 90) se acepta tal cual; si no, la zona se vuelve a leer sola, como una línea:
+	/// en una línea con palabras dudosas el OCR baja la confianza de todas (un título junto a una etiqueta).
+	/// </summary>
+	/// <summary>Máximo de zonas que se releen (tiempo acotado en imágenes con mucho "ruido" que parece texto).</summary>
+	private const int MaxRereads = 150;
+
+	public static void PlanReading(IEnumerable<RasterTextLine> pageReads, int height, out List<RasterTextLine> confident, out List<PixelRect> reread,
+		out List<RasterTextLine> fallback)
+	{
+		confident = new List<RasterTextLine>();
+		reread = new List<PixelRect>();
+		fallback = new List<RasterTextLine>();
+		var taken = new List<RasterTextLine>();
+		foreach (RasterTextLine line in pageReads.OrderByDescending(Score))
+		{
+			int boxHeight = line.Y2 - line.Y1;
+			if (boxHeight < 5 || boxHeight > height * 0.08)
+			{
+				continue;
+			}
+
+			bool plausible = IsPlausible(line.Text, line.Confidence) && FitsBox(line);
+			if (taken.Any(t => Overlap(t, line)))
+			{
+				// Zona ya tomada por otra lectura: si esta es creíble, compite igual en la unión final.
+				if (plausible)
+				{
+					line.Text = FixCodes(line.Text).Trim();
+					fallback.Add(line);
+				}
+
+				continue;
+			}
+
+			taken.Add(line);
+			if (plausible && Score(line) >= 90)
+			{
+				line.Text = FixCodes(line.Text).Trim();
+				confident.Add(line);
+			}
+			else
+			{
+				if (reread.Count < MaxRereads)
+				{
+					reread.Add(new PixelRect(line.X1, line.Y1, line.X2 - 1, line.Y2 - 1));
+				}
+
+				// La lectura de página sigue compitiendo con la relectura (si es creíble): si la relectura sale peor, se
+				// queda esta.
+				if (plausible)
+				{
+					line.Text = FixCodes(line.Text).Trim();
+					fallback.Add(line);
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// Puntuación para elegir entre lecturas de la misma zona: la confianza del OCR, con bonificación para los códigos
+	/// de plano (C03, S05) y penalización para lo que no suele haber en un plano (todo en minúsculas, signos dentro de
+	/// una palabra como "DEIAI!").
+	/// </summary>
+	private static double Score(RasterTextLine line)
+	{
+		string text = line.Text?.Trim() ?? string.Empty;
+		double score = line.Confidence;
+		if (System.Text.RegularExpressions.Regex.IsMatch(FixCodes(text), @"^[A-Z]\d{2,3}$"))
+		{
+			score += 15;
+		}
+
+		if (text.Any(char.IsLower) && !text.Any(char.IsUpper))
+		{
+			score -= 10;
+		}
+
+		if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[A-Za-zÁÉÍÓÚÑáéíóúñ][!¡?¿|]+|[!¡?¿|]+[A-Za-zÁÉÍÓÚÑáéíóúñ]"))
+		{
+			score -= 20;
+		}
+
+		return score;
+	}
+
+	private static double Area(RasterTextLine l) => Math.Max(1, l.X2 - l.X1) * (double)Math.Max(1, l.Y2 - l.Y1);
+
+	private static bool Overlap(RasterTextLine a, RasterTextLine b)
+	{
+		int ix = Math.Min(a.X2, b.X2) - Math.Max(a.X1, b.X1);
+		int iy = Math.Min(a.Y2, b.Y2) - Math.Max(a.Y1, b.Y1);
+		if (ix <= 0 || iy <= 0)
+		{
+			return false;
+		}
+
+		double smaller = Math.Min((a.X2 - a.X1) * (double)(a.Y2 - a.Y1), (b.X2 - b.X1) * (double)(b.Y2 - b.Y1));
+		return ix * (double)iy > smaller * 0.5;
+	}
+
+	private static string StripAccents(string text) => new string(text.Normalize(NormalizationForm.FormD)
+		.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+		.ToArray()).ToUpperInvariant();
+
+	private static int AccentCount(string text) => text.Normalize(NormalizationForm.FormD)
+		.Count(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.NonSpacingMark);
 
 	/// <summary>
 	/// Ajusta cada texto a lo que ocupa en la imagen:
