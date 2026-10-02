@@ -334,6 +334,14 @@ internal static class RasterText
 			return code ? confidence >= 60f : measure ? confidence >= 80f : word && confidence >= wordConfidence && (hasVowel || alnum.All(char.IsUpper));
 		}
 
+		// Texto "troceado" ("WH 41 7 LA", "1 > q 4"): casi todo son fragmentos de 1-2 caracteres. Es lo que lee el OCR en
+		// rayados y muestras de color; solo se acepta con una lectura casi segura.
+		string[] tokens = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+		if (tokens.Length >= 3 && tokens.Count(t => t.Length <= 2) * 10 >= tokens.Length * 6 && confidence < 92f)
+		{
+			return false;
+		}
+
 		return (hasVowel || hasDigit) && confidence >= 60f;
 	}
 

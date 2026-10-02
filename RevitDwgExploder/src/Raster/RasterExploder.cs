@@ -57,6 +57,12 @@ internal static class RasterExploder
 		return !string.IsNullOrEmpty(path) && File.Exists(path) ? LoadFile(path) : null;
 	}
 
+	/// <summary>Distancia RGB bajo la cual dos colores de relleno se consideran el mismo.</summary>
+	public static double ColorMergeDistance = 12.0;
+
+	/// <summary>Diagnóstico de tiempos por fase (null = desactivado).</summary>
+	public static List<string> Timing;
+
 	/// <summary>Carga un archivo de imagen sin dejarlo bloqueado.</summary>
 	public static Bitmap LoadFile(string path)
 	{
@@ -103,14 +109,23 @@ internal static class RasterExploder
 
 		// 1ª pasada: líneas y rellenos, para preparar las imágenes del OCR.
 		double pixelScale = Math.Max(1.0, factor);
+		var clock = System.Diagnostics.Stopwatch.StartNew();
 		RasterDrawing firstPass = RasterVectorizer.Vectorize(width, height, argb, null, minSegment: minSegment, pixelScale: pixelScale);
+		Timing?.Add("vectorizar 1ª pasada " + clock.ElapsedMilliseconds + " ms (" + width + "x" + height + ")");
+		clock.Restart();
 		List<RasterTextLine> texts = ReadTexts(width, height, argb, firstPass, pixelScale);
+		Timing?.Add("OCR " + clock.ElapsedMilliseconds + " ms (" + texts.Count + " textos)");
+		clock.Restart();
 
 		// 2ª pasada: sin los píxeles de los textos reconocidos (serían cientos de trazos cortos).
 		IEnumerable<PixelRect> ignore = texts.Select(RasterText.EraseArea);
 		RasterDrawing raster = RasterVectorizer.Vectorize(width, height, argb, ignore, minSegment: minSegment, pixelScale: pixelScale);
+		Timing?.Add("vectorizar 2ª pasada " + clock.ElapsedMilliseconds + " ms; rellenos=" + raster.Fills.Count + " vértices=" + raster.Fills.Sum(f => f.Outline.Count + f.Holes.Sum(h => h.Count)) + " huecos=" + raster.Fills.Sum(f => f.Holes.Count) + " máx.vértices=" + raster.Fills.Max(f => f.Outline.Count + f.Holes.Sum(h => h.Count)));
+		clock.Restart();
 		PdfDrawing drawing = ToDrawing(raster, texts);
-		return PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
+		bool ok = PdfExploder.Explode(doc, view, drawing, bottomLeft, feetPerPx, shortCurveTolerance, stats, StylePrefix);
+		Timing?.Add("crear en Revit " + clock.ElapsedMilliseconds + " ms");
+		return ok;
 	}
 
 	/// <summary>
@@ -274,14 +289,33 @@ internal static class RasterExploder
 		double h = raster.Height;
 		var drawing = new PdfDrawing { Width = raster.Width, Height = raster.Height };
 
-		foreach (RasterFill fill in raster.Fills)
+		// Cada color de relleno distinto es un tipo de Filled Region (y Revit tarda en regenerarlos todos). El color medio
+		// de cada mancha varía unas unidades por el antialiasing: los colores parecidos se unen al de la mancha mayor.
+		var palette = new List<(byte R, byte G, byte B)>();
+		(byte R, byte G, byte B) Unify(RasterFill f)
+		{
+			foreach (var p in palette)
+			{
+				int dr = p.R - f.R, dg = p.G - f.G, db = p.B - f.B;
+				if (dr * dr + dg * dg + db * db <= ColorMergeDistance * ColorMergeDistance)
+				{
+					return p;
+				}
+			}
+
+			palette.Add((f.R, f.G, f.B));
+			return (f.R, f.G, f.B);
+		}
+
+		foreach (RasterFill fill in raster.Fills.OrderByDescending(f => f.Outline.Count == 0 ? 0.0 : (f.Outline.Max(p => p.X) - f.Outline.Min(p => p.X)) * (f.Outline.Max(p => p.Y) - f.Outline.Min(p => p.Y))))
 		{
 			if (fill.Outline.Count < 3)
 			{
 				continue;
 			}
 
-			var shape = new PdfFillShape { R = fill.R, G = fill.G, B = fill.B, OuterFirst = true };
+			(byte fr, byte fg, byte fb) = Unify(fill);
+			var shape = new PdfFillShape { R = fr, G = fg, B = fb, OuterFirst = true };
 			shape.Loops.Add(fill.Outline.Select(p => new Pt(p.X, h - p.Y)).ToList());
 			foreach (List<(double X, double Y)> hole in fill.Holes.Where(l => l.Count >= 3))
 			{

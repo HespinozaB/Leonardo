@@ -70,6 +70,11 @@ internal static class RasterVectorizer
 	[ThreadStatic]
 	private static double S;
 
+	public static List<string> DebugLog;
+
+	/// <summary>Tolerancia (px) con la que se simplifican los contornos de los rellenos.</summary>
+	public static double FillTolerance = 1.0;
+
 	private const byte Background = 0;
 	private const byte Ink = 1;
 	private const byte FillPixel = 2;
@@ -83,6 +88,10 @@ internal static class RasterVectorizer
 		double minSegment = 0.0, double pixelScale = 1.0)
 	{
 		S = Math.Max(1.0, pixelScale);
+
+		// Revit tarda ~1 ms por vértice de Filled Region al confirmar la transacción (más si tienen huecos): la tolerancia
+		// de los contornos crece con el tamaño de la imagen (~0,11 % del lado mayor), que no se nota al verlos.
+		FillTolerance = Math.Max(1.0, Math.Max(width, height) / 900.0);
 		var drawing = new RasterDrawing { Width = width, Height = height };
 		int n = width * height;
 		var luma = new byte[n];
@@ -360,6 +369,7 @@ internal static class RasterVectorizer
 			}
 
 			int minArea = thick ? minAreaThick : minAreaMedium;
+			if (DebugLog != null && similar.Count > 300) DebugLog.Add("seed " + (start % w) + "," + (start / w) + " thick=" + thick + " similar=" + similar.Count + " gaps=" + gaps.Count + " minArea=" + minArea + " color=" + (argb[start] & 0xFFFFFF).ToString("X6"));
 			if (similar.Count < minArea)
 			{
 				foreach (int i in gaps)
@@ -387,6 +397,7 @@ internal static class RasterVectorizer
 				}
 
 				double meanDistance = partSimilar.Average(i => distance[i]) / 3.0;
+				if (DebugLog != null && partSimilar.Count > 300) DebugLog.Add("  part n=" + partSimilar.Count + " bx=" + part.Min(i => i % w) + "-" + part.Max(i => i % w) + " by=" + part.Min(i => i / w) + "-" + part.Max(i => i / w) + " meanDist=" + meanDistance.ToString("0.0"));
 				if (meanDistance < (thick ? 3.0 : 2.0) * S)
 				{
 					continue;
@@ -394,7 +405,9 @@ internal static class RasterVectorizer
 
 				// Las manchas medianas deben ser compactas (muestras, bloques): las letras o los trazos gruesos ocupan
 				// poco de su rectángulo.
-				if (!thick)
+				// Una mancha ancha (grosor medio ≥ 5 px) es un relleno aunque su rectángulo envolvente quede poco ocupado (letras
+				// en U, A, T, S, rombos en diagonal): el filtro de solidez solo sirve para descartar texto fino y rayados.
+				if (!thick && meanDistance < 5.0 * S)
 				{
 					int bx0 = part.Min(i => i % w), bx1 = part.Max(i => i % w);
 					int by0 = part[0] / w, by1 = part.Max(i => i / w);
@@ -770,7 +783,7 @@ internal static class RasterVectorizer
 				nextHole++;
 				int hid = nextHole;
 				int holeCount = Flood4(hs, lw, lh, j => comp[j] != id && !outside[j] && holeId[j] == 0, j => holeId[j] = hid);
-				if (holeCount < Math.Max(4, minArea / 4))
+				if (holeCount < Math.Max(Math.Max(4, minArea / 4), (int)(12 * S * S)))
 				{
 					continue;
 				}
@@ -826,7 +839,7 @@ internal static class RasterVectorizer
 		}
 
 		List<(double X, double Y)> points = raw.Select(p => (p.Item1 + dx, p.Item2 + dy)).ToList();
-		foreach (double tolerance in new[] { 1.0, 0.6, 0.0 })
+		foreach (double tolerance in new[] { FillTolerance, FillTolerance * 0.6, FillTolerance * 0.35, FillTolerance * 0.2, 0.0 })
 		{
 			List<(double X, double Y)> candidate = tolerance > 0 ? Simplify(points, tolerance, closed: true) : RemoveCollinear(points);
 			candidate = EnforceMinSegment(candidate, minSegment);
