@@ -2,16 +2,20 @@
 
 Addin hermano de *EMASY DWG Tools*: aparece en la misma pestaña **EMASY**, panel **Parámetros**, botón **Auditar Parámetros**.
 
-Revisa todos los parámetros del proyecto (de proyecto, compartidos y globales) y los clasifica en cuatro pestañas:
+Revisa todos los parámetros del proyecto (de proyecto, compartidos y globales) y los muestra en **una sola tabla**:
 
-| Pestaña | Qué contiene |
-|---|---|
-| **En planos** | Parámetros con valor en planos, viewports, vistas colocadas en planos, cajetines o Información de proyecto, y los usados en filtros de vistas colocadas en planos (o en sus plantillas). |
-| **En tablas** | Parámetros usados como campo (incluidos los parámetros combinados) en cualquier tabla de planificación; se indica cuáles tablas y si están colocadas en un plano. |
-| **Sin uso (residuales)** | Los que no aparecen ni en planos ni en tablas. Se pueden marcar y eliminar. |
-| **Todos** | El total, con su estado. |
+| Parámetro | Plano | Tabla | Ninguna | Con valores |
+|---|---|---|---|---|
+| Parámetro 1 | ✗ | ✗ | ✓ | No |
 
-Cada fila muestra origen (Proyecto / Compartido / Global), tipo de dato, grupo, vínculo (Ejemplar / Tipo / Solo familias), categorías y, en los residuales, **advertencias** (en naranja) antes de borrar:
+* **Plano ✓**: valor en planos, viewports, vistas colocadas, cajetines o Información de proyecto, o usado en filtros de vistas colocadas en planos.
+* **Tabla ✓**: usado como campo (incluidos los combinados) en alguna tabla de planificación (el detalle indica cuáles).
+* **Ninguna ✓**: no está ni en planos ni en tablas. Los residuales aparecen primero.
+* **Con valores**: (en los residuales) algún elemento tiene un valor escrito; se perdería al eliminarlo.
+
+Tú decides: marca con la casilla los que quieras eliminar (cualquier fila, no solo "Ninguna") y pulsa **Eliminar marcados**. Un filtro permite ver solo los residuales, los residuales sin valores, etc.
+
+Además de lo anterior, cada fila muestra origen (Proyecto / Compartido / Global), tipo de dato, grupo, vínculo (Ejemplar / Tipo / Solo familias), categorías y, en los residuales, **advertencias** (en naranja) antes de borrar:
 
 * usado en un filtro de vista que no está en planos,
 * enlazado a Planos / Vistas / Cajetín / Información de proyecto (puede ser una etiqueta de cajetín aunque esté vacío),
@@ -22,7 +26,7 @@ Cada fila muestra origen (Proyecto / Compartido / Global), tipo de dato, grupo, 
 
 * **Análisis profundo**: además cuenta como "en planos" un parámetro con valor en los elementos visibles en las vistas colocadas en planos. Es más lento y es una señal débil (un valor no implica que se muestre), por eso está apagado por defecto.
 * **Exportar CSV**: todos los parámetros con su estado (separador `;`, UTF-8 con BOM, abre bien en Excel).
-* **Eliminar marcados** (solo en la pestaña de residuales): vuelve a comprobar que siguen sin uso, pide confirmación y borra en una sola transacción (se deshace con Ctrl+Z).
+* **Eliminar marcados**: pide confirmación (avisa de los que están en uso o tienen valores) y borra en una sola transacción (se deshace con Ctrl+Z).
 
 ## Limitaciones
 

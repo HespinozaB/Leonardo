@@ -17,12 +17,22 @@ namespace RevitParamAudit.UI;
 /// </summary>
 internal sealed class ParamAuditForm : Form
 {
+	private const string Yes = "✓";
+
+	private const string No = "✗";
+
 	private static readonly string[] ColumnNames =
 	{
-		"Nombre", "Origen", "Tipo de dato", "Grupo", "Vínculo", "Categorías", "Usos en planos", "Tablas", "Advertencias", "Id"
+		"Parámetro", "Plano", "Tabla", "Ninguna", "Con valores", "Origen", "Tipo de dato", "Grupo", "Vínculo", "Categorías",
+		"Detalle en planos", "Detalle en tablas", "Advertencias", "Id"
 	};
 
-	private static readonly int[] ColumnWidths = { 220, 80, 110, 130, 80, 240, 280, 280, 320, 70 };
+	private static readonly int[] ColumnWidths = { 230, 55, 55, 65, 85, 80, 110, 130, 80, 240, 260, 260, 320, 70 };
+
+	private static readonly string[] Filters =
+	{
+		"Todos", "Ninguna (residuales)", "Ninguna y sin valores", "En plano", "En tabla", "En plano o tabla"
+	};
 
 	private readonly ParamAuditHandler _handler;
 
@@ -30,23 +40,17 @@ internal sealed class ParamAuditForm : Form
 
 	private readonly TextBox _search = new TextBox();
 
+	private readonly ComboBox _filter = new ComboBox();
+
 	private readonly CheckBox _deep = new CheckBox();
 
 	private readonly Button _refresh = new Button();
 
-	private readonly TabControl _tabs = new TabControl();
-
-	private readonly ListView _sheets = NewList(false);
-
-	private readonly ListView _schedules = NewList(false);
-
-	private readonly ListView _unused = NewList(true);
-
-	private readonly ListView _all = NewList(false);
+	private readonly ListView _list = new ListView();
 
 	private readonly Label _status = new Label();
 
-	private readonly Button _checkAll = new Button();
+	private readonly Button _checkShown = new Button();
 
 	private readonly Button _checkNone = new Button();
 
@@ -57,6 +61,8 @@ internal sealed class ParamAuditForm : Form
 	private List<ParamEntry> _entries = new List<ParamEntry>();
 
 	private string _documentTitle = string.Empty;
+
+	private bool _filling;
 
 	public ParamAuditForm(ParamAuditHandler handler, ExternalEvent externalEvent)
 	{
@@ -82,33 +88,6 @@ internal sealed class ParamAuditForm : Form
 		BuildLayout();
 	}
 
-	private static ListView NewList(bool checkBoxes)
-	{
-		var list = new ListView
-		{
-			Dock = DockStyle.Fill,
-			View = View.Details,
-			FullRowSelect = true,
-			MultiSelect = true,
-			HideSelection = false,
-			GridLines = true,
-			CheckBoxes = checkBoxes
-		};
-		for (int i = 0; i < ColumnNames.Length; i++)
-		{
-			list.Columns.Add(ColumnNames[i], ColumnWidths[i]);
-		}
-
-		list.ColumnClick += (s, e) =>
-		{
-			var sorter = list.ListViewItemSorter as ColumnSorter;
-			bool ascending = sorter == null || sorter.Column != e.Column || !sorter.Ascending;
-			list.ListViewItemSorter = new ColumnSorter(e.Column, ascending);
-			list.Sort();
-		};
-		return list;
-	}
-
 	private void BuildLayout()
 	{
 		Text = "EMASY · Auditoría de parámetros";
@@ -120,10 +99,17 @@ internal sealed class ParamAuditForm : Form
 
 		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(8, 8, 8, 0), WrapContents = false };
 		top.Controls.Add(new Label { Text = "Buscar:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) });
-		_search.Width = 300;
+		_search.Width = 240;
 		_search.TextChanged += (s, e) => Populate();
 		top.Controls.Add(_search);
-		_deep.Text = "Análisis profundo (valores en elementos visibles en planos; más lento)";
+		top.Controls.Add(new Label { Text = "Mostrar:", AutoSize = true, Margin = new Padding(16, 6, 4, 0) });
+		_filter.DropDownStyle = ComboBoxStyle.DropDownList;
+		_filter.Width = 170;
+		_filter.Items.AddRange(Filters);
+		_filter.SelectedIndex = 0;
+		_filter.SelectedIndexChanged += (s, e) => Populate();
+		top.Controls.Add(_filter);
+		_deep.Text = "Análisis profundo (más lento)";
 		_deep.AutoSize = true;
 		_deep.Margin = new Padding(16, 5, 0, 0);
 		_deep.CheckedChanged += (s, e) => RequestRefresh();
@@ -134,20 +120,40 @@ internal sealed class ParamAuditForm : Form
 		_refresh.Click += (s, e) => RequestRefresh();
 		top.Controls.Add(_refresh);
 
-		AddTab(_sheets, "En planos");
-		AddTab(_schedules, "En tablas");
-		AddTab(_unused, "Sin uso (residuales)");
-		AddTab(_all, "Todos");
-		_tabs.Dock = DockStyle.Fill;
-		_tabs.SelectedIndexChanged += (s, e) => UpdateButtons();
+		_list.Dock = DockStyle.Fill;
+		_list.View = View.Details;
+		_list.FullRowSelect = true;
+		_list.MultiSelect = true;
+		_list.HideSelection = false;
+		_list.GridLines = true;
+		_list.CheckBoxes = true;
+		for (int i = 0; i < ColumnNames.Length; i++)
+		{
+			_list.Columns.Add(ColumnNames[i], ColumnWidths[i], i >= 1 && i <= 4 ? HorizontalAlignment.Center : HorizontalAlignment.Left);
+		}
 
-		_unused.ItemChecked += (s, e) => UpdateButtons();
+		_list.ColumnClick += (s, e) =>
+		{
+			var sorter = _list.ListViewItemSorter as ColumnSorter;
+			bool ascending = sorter == null || sorter.Column != e.Column || !sorter.Ascending;
+			_list.ListViewItemSorter = new ColumnSorter(e.Column, ascending);
+			_list.Sort();
+		};
+		_list.ItemCheck += (s, e) =>
+		{
+			// Los parámetros globales no se evalúan: no se pueden marcar para eliminar.
+			if (!_filling && e.NewValue == CheckState.Checked && _list.Items[e.Index].Tag is ParamEntry entry && entry.IsGlobal)
+			{
+				e.NewValue = CheckState.Unchecked;
+			}
+		};
+		_list.ItemChecked += (s, e) => UpdateButtons();
 
 		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 40, Padding = new Padding(8, 6, 8, 0), WrapContents = false };
-		_checkAll.Text = "Marcar todos";
-		_checkAll.AutoSize = true;
-		_checkAll.Click += (s, e) => SetAllChecked(true);
-		_checkNone.Text = "Desmarcar";
+		_checkShown.Text = "Marcar los mostrados";
+		_checkShown.AutoSize = true;
+		_checkShown.Click += (s, e) => SetAllChecked(true);
+		_checkNone.Text = "Desmarcar todos";
 		_checkNone.AutoSize = true;
 		_checkNone.Click += (s, e) => SetAllChecked(false);
 		_delete.Text = "Eliminar marcados";
@@ -159,30 +165,18 @@ internal sealed class ParamAuditForm : Form
 		_export.Click += (s, e) => ExportCsv();
 		_status.AutoSize = true;
 		_status.Margin = new Padding(16, 7, 0, 0);
-		bottom.Controls.AddRange(new Control[] { _checkAll, _checkNone, _delete, _export, _status });
+		bottom.Controls.AddRange(new Control[] { _checkShown, _checkNone, _delete, _export, _status });
 
-		Controls.Add(_tabs);
+		Controls.Add(_list);
 		Controls.Add(bottom);
 		Controls.Add(top);
 		UpdateButtons();
 	}
 
-	private void AddTab(ListView list, string title)
-	{
-		var page = new TabPage(title);
-		page.Controls.Add(list);
-		_tabs.TabPages.Add(page);
-	}
-
-	private bool OnUnusedTab => _tabs.SelectedTab != null && _tabs.SelectedTab.Controls.Contains(_unused);
-
 	private void UpdateButtons()
 	{
-		bool unusedTab = OnUnusedTab;
-		_checkAll.Visible = unusedTab;
-		_checkNone.Visible = unusedTab;
-		_delete.Visible = unusedTab;
-		_delete.Enabled = unusedTab && _unused.CheckedItems.Count > 0;
+		_delete.Enabled = _refresh.Enabled && _list.CheckedItems.Count > 0;
+		_delete.Text = _list.CheckedItems.Count > 0 ? $"Eliminar marcados ({_list.CheckedItems.Count})" : "Eliminar marcados";
 	}
 
 	public void RequestRefresh()
@@ -205,27 +199,48 @@ internal sealed class ParamAuditForm : Form
 
 	public void SetResult(AuditResult result, string title, string message)
 	{
-		_entries = result.Entries;
+		// Primero los residuales ("Ninguna"), luego el resto por nombre.
+		_entries = result.Entries.OrderByDescending(e => e.IsUnused).ThenBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
 		_documentTitle = title ?? string.Empty;
 		_refresh.Enabled = true;
 		Cursor = Cursors.Default;
 		Populate();
-		string summary = $"{_entries.Count} parámetros · {_entries.Count(e => e.InSheets)} en planos · " +
-			$"{_entries.Count(e => e.InSchedules)} en tablas · {_entries.Count(e => e.IsUnused)} residuales";
+		string summary = $"{_entries.Count} parámetros · {_entries.Count(e => e.InSheets)} en plano · " +
+			$"{_entries.Count(e => e.InSchedules)} en tabla · {_entries.Count(e => e.IsUnused)} ninguna";
 		_status.Text = string.IsNullOrEmpty(message) ? summary : summary + "  —  " + message;
 		UpdateButtons();
 	}
 
 	private IEnumerable<ParamEntry> Filtered()
 	{
-		string text = _search.Text.Trim();
-		if (text.Length == 0)
+		IEnumerable<ParamEntry> items = _entries;
+		switch (_filter.SelectedIndex)
 		{
-			return _entries;
+			case 1:
+				items = items.Where(e => e.IsUnused);
+				break;
+			case 2:
+				items = items.Where(e => e.IsUnused && !e.HasValues);
+				break;
+			case 3:
+				items = items.Where(e => e.InSheets);
+				break;
+			case 4:
+				items = items.Where(e => e.InSchedules);
+				break;
+			case 5:
+				items = items.Where(e => e.InSheets || e.InSchedules);
+				break;
 		}
 
-		return _entries.Where(e => ContainsText(e.Name, text) || ContainsText(e.Categories, text) || ContainsText(e.Group, text)
-			|| ContainsText(e.SchedulesText, text) || ContainsText(e.SheetsText, text));
+		string text = _search.Text.Trim();
+		if (text.Length > 0)
+		{
+			items = items.Where(e => ContainsText(e.Name, text) || ContainsText(e.Categories, text) || ContainsText(e.Group, text)
+				|| ContainsText(e.SchedulesText, text) || ContainsText(e.SheetsText, text));
+		}
+
+		return items;
 	}
 
 	private static bool ContainsText(string value, string text) =>
@@ -233,25 +248,18 @@ internal sealed class ParamAuditForm : Form
 
 	private void Populate()
 	{
-		List<ParamEntry> visible = Filtered().ToList();
-		Fill(_sheets, visible.Where(e => e.InSheets && !e.IsGlobal).ToList(), "En planos");
-		Fill(_schedules, visible.Where(e => e.InSchedules && !e.IsGlobal).ToList(), "En tablas");
-		Fill(_unused, visible.Where(e => e.IsUnused).ToList(), "Sin uso (residuales)");
-		Fill(_all, visible, "Todos");
-	}
-
-	private void Fill(ListView list, List<ParamEntry> items, string title)
-	{
-		var checkedIds = new HashSet<long>(list.CheckedItems.Cast<ListViewItem>().Select(i => ((ParamEntry)i.Tag).Id));
-		list.BeginUpdate();
-		list.Items.Clear();
+		var checkedIds = new HashSet<long>(_list.CheckedItems.Cast<ListViewItem>().Select(i => ((ParamEntry)i.Tag).Id));
+		List<ParamEntry> items = Filtered().ToList();
+		_filling = true;
+		_list.BeginUpdate();
+		_list.Items.Clear();
 		foreach (ParamEntry entry in items)
 		{
-			var item = new ListViewItem(entry.Name)
-			{
-				Tag = entry,
-				Checked = checkedIds.Contains(entry.Id)
-			};
+			var item = new ListViewItem(entry.Name) { Tag = entry };
+			item.SubItems.Add(entry.IsGlobal ? "—" : entry.InSheets ? Yes : No);
+			item.SubItems.Add(entry.IsGlobal ? "—" : entry.InSchedules ? Yes : No);
+			item.SubItems.Add(entry.IsGlobal ? "—" : entry.IsUnused ? Yes : No);
+			item.SubItems.Add(entry.IsGlobal ? "—" : entry.IsUnused ? (entry.HasValues ? "Sí" : "No") : "");
 			item.SubItems.Add(entry.Scope);
 			item.SubItems.Add(entry.DataType);
 			item.SubItems.Add(entry.Group);
@@ -261,46 +269,61 @@ internal sealed class ParamAuditForm : Form
 			item.SubItems.Add(entry.SchedulesText);
 			item.SubItems.Add(entry.WarningsText);
 			item.SubItems.Add(entry.Id.ToString());
-			if (entry.IsUnused && entry.Warnings.Count > 0)
+			if (entry.IsUnused && (entry.HasValues || entry.Warnings.Count > 0))
 			{
 				item.ForeColor = Color.DarkOrange;
 			}
+			else if (entry.IsGlobal)
+			{
+				item.ForeColor = Color.Gray;
+			}
 
-			list.Items.Add(item);
+			item.Checked = checkedIds.Contains(entry.Id);
+			_list.Items.Add(item);
 		}
 
-		list.EndUpdate();
-		((TabPage)list.Parent).Text = $"{title} ({items.Count})";
+		_list.EndUpdate();
+		_filling = false;
+		UpdateButtons();
 	}
 
 	private void SetAllChecked(bool value)
 	{
-		_unused.BeginUpdate();
-		foreach (ListViewItem item in _unused.Items)
+		_list.BeginUpdate();
+		foreach (ListViewItem item in _list.Items)
 		{
-			item.Checked = value;
+			if (!value || !((ParamEntry)item.Tag).IsGlobal)
+			{
+				item.Checked = value;
+			}
 		}
 
-		_unused.EndUpdate();
+		_list.EndUpdate();
 		UpdateButtons();
 	}
 
 	private void DeleteChecked()
 	{
-		List<ParamEntry> chosen = _unused.CheckedItems.Cast<ListViewItem>().Select(i => (ParamEntry)i.Tag).ToList();
+		List<ParamEntry> chosen = _list.CheckedItems.Cast<ListViewItem>().Select(i => (ParamEntry)i.Tag).ToList();
 		if (chosen.Count == 0)
 		{
 			return;
 		}
 
+		int used = chosen.Count(e => !e.IsUnused);
 		int withValues = chosen.Count(e => e.HasValues);
-		int warned = chosen.Count(e => e.Warnings.Count > 0);
+		int warned = chosen.Count(e => e.IsUnused && e.Warnings.Count > 0);
 		var text = new StringBuilder();
 		text.AppendLine($"Se eliminarán {chosen.Count} parámetro(s) del proyecto.");
 		text.AppendLine("Los valores guardados en los elementos se perderán y la acción afecta a todo el modelo.");
-		if (withValues > 0)
+		if (used > 0)
 		{
 			text.AppendLine();
+			text.AppendLine($"• {used} están en uso (plano o tabla): se eliminarán igualmente porque los marcaste tú.");
+		}
+
+		if (withValues > 0)
+		{
 			text.AppendLine($"• {withValues} tienen valores escritos en elementos.");
 		}
 

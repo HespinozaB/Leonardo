@@ -69,11 +69,9 @@ internal sealed class ParamAuditHandler : IExternalEventHandler
 
 	public string GetName() => "EMASY · Auditoría de parámetros";
 
-	/// <summary>Elimina los parámetros marcados, comprobando de nuevo que siguen sin uso justo antes de borrar.</summary>
+	/// <summary>Elimina los parámetros que el usuario marcó (la decisión es suya; los globales nunca se borran).</summary>
 	private string DeleteUnused(Document doc)
 	{
-		HashSet<long> stillUnused = new HashSet<long>(
-			ParameterAuditor.Run(doc, Deep).Entries.Where(e => e.IsUnused).Select(e => e.Id));
 		int deleted = 0;
 		int skipped = 0;
 		int failed = 0;
@@ -82,12 +80,6 @@ internal sealed class ParamAuditHandler : IExternalEventHandler
 			transaction.Start();
 			foreach (long id in Ids)
 			{
-				if (!stillUnused.Contains(id))
-				{
-					skipped++;
-					continue;
-				}
-
 				var parameter = doc.GetElement(new ElementId(id)) as ParameterElement;
 				if (parameter == null || parameter is GlobalParameter)
 				{
@@ -130,7 +122,7 @@ internal sealed class ParamAuditHandler : IExternalEventHandler
 		string text = $"{deleted} parámetro(s) eliminado(s).";
 		if (skipped > 0)
 		{
-			text += $" {skipped} omitido(s): ya no eran residuales.";
+			text += $" {skipped} omitido(s).";
 		}
 
 		if (failed > 0)
