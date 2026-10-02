@@ -45,6 +45,9 @@ internal static class PdfExploder
 
 	private const int CurveBatchSize = 500;
 
+	/// <summary>Diagnóstico: confirmar cada relleno en su propia transacción.</summary>
+	public static bool PerRegionCommit;
+
 	/// <summary>
 	/// Explota una página en <paramref name="view"/>. <paramref name="origin"/> es el punto del modelo que
 	/// corresponde a la esquina inferior izquierda de la página y <paramref name="feetPerPt"/> la escala.
@@ -57,12 +60,24 @@ internal static class PdfExploder
 		XYZ ToModel(Pt p) => origin + right.Multiply(p.X * feetPerPt) + up.Multiply(p.Y * feetPerPt);
 
 		double minLength = shortCurveTolerance * 1.01;
-		using var tx = new Transaction(doc, "EMASY: explotar " + stylePrefix);
-		FailureHandlingOptions failureOptions = tx.GetFailureHandlingOptions();
-		failureOptions.SetFailuresPreprocessor(new ExplodeDwgCommand.WarningSwallower());
-		failureOptions.SetClearAfterRollback(true);
-		tx.SetFailureHandlingOptions(failureOptions);
-		tx.Start();
+		// Varias transacciones pequeñas dentro de un grupo (un solo "deshacer"): con miles de líneas en una sola
+		// transacción el commit (validación de avisos y regeneración) tarda decenas de segundos.
+		using var group = new TransactionGroup(doc, "EMASY: explotar " + stylePrefix);
+		group.Start();
+		Transaction Begin(string name)
+		{
+			var t = new Transaction(doc, name);
+			FailureHandlingOptions failureOptions = t.GetFailureHandlingOptions();
+			failureOptions.SetFailuresPreprocessor(new ExplodeDwgCommand.WarningSwallower());
+			failureOptions.SetClearAfterRollback(true);
+			t.SetFailureHandlingOptions(failureOptions);
+			t.Start();
+			return t;
+		}
+
+		Transaction tx = Begin("EMASY: rellenos");
+
+		var clock = System.Diagnostics.Stopwatch.StartNew();
 
 		// 1) Rellenos (debajo de todo, en el orden del PDF).
 		var regions = new FilledRegionBuilder(doc, view, shortCurveTolerance);
@@ -79,7 +94,20 @@ internal static class PdfExploder
 				B = fill.B,
 				Loops = fill.Loops.Select(loop => loop.Select(ToModel).ToList()).ToList()
 			};
-			if (regions.Create(region))
+			long fillStart = clock.ElapsedMilliseconds;
+			bool createdOk = regions.Create(region);
+			long fillTook = clock.ElapsedMilliseconds - fillStart;
+			if (PerRegionCommit)
+			{
+				long c0 = clock.ElapsedMilliseconds;
+				tx.Commit();
+				long ctook = clock.ElapsedMilliseconds - c0;
+				if (ctook > 150) Raster.RasterExploder.Timing?.Add("    commit relleno " + ctook + " ms: bucles=" + fill.Loops.Count + " vértices=" + fill.Loops.Sum(l => l.Count));
+				tx = Begin("EMASY: rellenos");
+			}
+
+			if (fillTook > 300) Raster.RasterExploder.Timing?.Add("    relleno lento " + fillTook + " ms: bucles=" + fill.Loops.Count + " vértices=" + fill.Loops.Sum(l => l.Count) + " ok=" + createdOk);
+			if (createdOk)
 			{
 				stats.Fills++;
 			}
@@ -89,7 +117,13 @@ internal static class PdfExploder
 			}
 		}
 
+		long beforeCommit = clock.ElapsedMilliseconds;
+		tx.Commit();
+		Raster.RasterExploder.Timing?.Add("  rellenos " + clock.ElapsedMilliseconds + " ms (commit " + (clock.ElapsedMilliseconds - beforeCommit) + " ms)");
+		clock.Restart();
+
 		// 2) Trazos → Detail Lines agrupadas por Line Style.
+		tx = Begin("EMASY: estilos de línea");
 		var styles = new PdfLineStyles(doc, stylePrefix);
 		var byStyle = new Dictionary<ElementId, List<Curve>>();
 		var seen = new HashSet<(long, long, long, long)>();
@@ -117,13 +151,20 @@ internal static class PdfExploder
 			}
 		}
 
+		tx.Commit();
+		Raster.RasterExploder.Timing?.Add("  preparar curvas " + clock.ElapsedMilliseconds + " ms");
+		clock.Restart();
 		foreach (var pair in byStyle)
 		{
 			GraphicsStyle style = pair.Key == ElementId.InvalidElementId ? null : doc.GetElement(pair.Key) as GraphicsStyle;
-			CreateCurves(doc, view, pair.Value, style, stats);
+			CreateCurves(doc, view, pair.Value, style, stats, Begin);
 		}
 
+		Raster.RasterExploder.Timing?.Add("  crear curvas " + clock.ElapsedMilliseconds + " ms (" + byStyle.Count + " estilos, " + byStyle.Values.Sum(l => l.Count) + " curvas)");
+		clock.Restart();
+
 		// 3) Textos (encima de todo).
+		tx = Begin("EMASY: textos");
 		var textTypes = new ExplodeDwgCommand.TextNoteTypeCache(doc, view.Scale, ExplodeDwgCommand.MinTextSizeFeet);
 		foreach (PdfTextItem text in drawing.Texts)
 		{
@@ -145,10 +186,15 @@ internal static class PdfExploder
 			}
 		}
 
+		Raster.RasterExploder.Timing?.Add("  textos " + clock.ElapsedMilliseconds + " ms");
+		clock.Restart();
 		stats.Images += drawing.Images;
 		stats.CreatedStyles += styles.Created;
 		stats.Pages++;
-		return tx.Commit() == TransactionStatus.Committed;
+		bool committed = tx.Commit() == TransactionStatus.Committed;
+		group.Assimilate();
+		Raster.RasterExploder.Timing?.Add("  commit " + clock.ElapsedMilliseconds + " ms");
+		return committed;
 	}
 
 	// ------------------------------------------------------------------ Curvas
@@ -252,12 +298,13 @@ internal static class PdfExploder
 		return ax < bx || (ax == bx && ay <= by) ? (ax, ay, bx, by) : (bx, by, ax, ay);
 	}
 
-	private static void CreateCurves(Document doc, View view, List<Curve> curves, GraphicsStyle style, PdfExplodeStats stats)
+	private static void CreateCurves(Document doc, View view, List<Curve> curves, GraphicsStyle style, PdfExplodeStats stats, Func<string, Transaction> begin)
 	{
 		for (int start = 0; start < curves.Count; start += CurveBatchSize)
 		{
 			List<Curve> batch = curves.GetRange(start, Math.Min(CurveBatchSize, curves.Count - start));
 			var created = new List<DetailCurve>();
+			using Transaction batchTx = begin("EMASY: líneas");
 			try
 			{
 				var array = new CurveArray();
@@ -287,21 +334,21 @@ internal static class PdfExploder
 				}
 			}
 
-			if (style == null)
+			if (style != null)
 			{
-				continue;
+				foreach (DetailCurve dc in created)
+				{
+					try
+					{
+						dc.LineStyle = style;
+					}
+					catch (Exception)
+					{
+					}
+				}
 			}
 
-			foreach (DetailCurve dc in created)
-			{
-				try
-				{
-					dc.LineStyle = style;
-				}
-				catch (Exception)
-				{
-				}
-			}
+			batchTx.Commit();
 		}
 	}
 
