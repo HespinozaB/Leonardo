@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>EMASY Parametros</Name>
+    <Assembly>EMASY-Parametros-2024\RevitParamAudit.dll</Assembly>
+    <AddInId>7D3F2B58-91A4-4C0E-8A6B-3E5C1F0A9D27</AddInId>
+    <FullClassName>RevitParamAudit.App</FullClassName>
+    <VendorId>EMASY</VendorId>
+    <VendorDescription>EMASY - Parametros</VendorDescription>
+  </AddIn>
+</RevitAddIns>
