@@ -42,8 +42,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="resources\audit32.png" LogicalName="RevitParamAudit.audit32.png" />
-    <EmbeddedResource Include="resources\audit16.png" LogicalName="RevitParamAudit.audit16.png" />
+    <EmbeddedResource Include="resources\audit32.b64" LogicalName="RevitParamAudit.audit32.b64" />
+    <EmbeddedResource Include="resources\audit16.b64" LogicalName="RevitParamAudit.audit16.b64" />
   </ItemGroup>
 
 </Project>

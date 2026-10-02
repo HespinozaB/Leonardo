@@ -12,8 +12,8 @@
     <Product>EMASY Parámetros</Product>
     <Company>EMASY</Company>
     <Description>Instalador de EMASY Parámetros para Revit 2024</Description>
-    <ApplicationIcon>emasy.ico</ApplicationIcon>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\RevitDwgExploder\installer\emasy.ico</ApplicationIcon>
+    <ApplicationManifest>..\..\RevitDwgExploder\installer\app.manifest</ApplicationManifest>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
@@ -32,7 +32,7 @@
   <ItemGroup>
     <!-- El paquete del addin (generado por build-zip.sh) va dentro del .exe. -->
     <EmbeddedResource Include="..\dist\EMASY-Parametros-2024.zip" LogicalName="payload.zip" />
-    <EmbeddedResource Include="..\resources\audit256.png" LogicalName="logo.png" />
+    <EmbeddedResource Include="..\..\RevitDwgExploder\resources\icon256.png" LogicalName="logo.png" />
   </ItemGroup>
 
 </Project>

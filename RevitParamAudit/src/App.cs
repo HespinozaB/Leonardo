@@ -31,8 +31,8 @@ public class App : IExternalApplication
 		{
 			ToolTip = "Revisa los parámetros del proyecto y los separa en: usados en planos, usados en tablas y " +
 				"residuales (sin uso en planos ni tablas). Permite exportar a CSV y eliminar los residuales.",
-			LargeImage = LoadIcon("RevitParamAudit.audit32.png"),
-			Image = LoadIcon("RevitParamAudit.audit16.png"),
+			LargeImage = LoadIcon("RevitParamAudit.audit32.b64"),
+			Image = LoadIcon("RevitParamAudit.audit16.b64"),
 			AvailabilityClassName = "RevitParamAudit.Commands.ParamAuditAvailability"
 		});
 		return Result.Succeeded;
@@ -45,11 +45,15 @@ public class App : IExternalApplication
 	{
 		try
 		{
-			using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
-			if (stream == null)
+			// El PNG viaja como texto base64 incrustado en la DLL.
+			using Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
+			if (source == null)
 			{
 				return null;
 			}
+
+			using var reader = new StreamReader(source);
+			using var stream = new MemoryStream(Convert.FromBase64String(reader.ReadToEnd().Trim()));
 
 			var image = new BitmapImage();
 			image.BeginInit();
