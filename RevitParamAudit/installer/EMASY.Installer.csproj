@@ -2,16 +2,16 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <AssemblyName>EMASY-Parametros-2024-Setup</AssemblyName>
+    <AssemblyName>EMASY-Depurador-2024-Setup</AssemblyName>
     <RootNamespace>EmasyInstaller</RootNamespace>
     <TargetFramework>net48</TargetFramework>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.0.0</Version>
-    <Product>EMASY Parámetros</Product>
+    <Version>2.0.0</Version>
+    <Product>EMASY Depurador</Product>
     <Company>EMASY</Company>
-    <Description>Instalador de EMASY Parámetros para Revit 2024</Description>
+    <Description>Instalador de EMASY Depurador para Revit 2024</Description>
     <ApplicationIcon>..\..\RevitDwgExploder\installer\emasy.ico</ApplicationIcon>
     <ApplicationManifest>..\..\RevitDwgExploder\installer\app.manifest</ApplicationManifest>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -31,8 +31,8 @@
 
   <ItemGroup>
     <!-- El paquete del addin (generado por build-zip.sh) va dentro del .exe. -->
-    <EmbeddedResource Include="..\dist\EMASY-Parametros-2024.zip" LogicalName="payload.zip" />
-    <EmbeddedResource Include="..\..\RevitDwgExploder\resources\icon256.png" LogicalName="logo.png" />
+    <EmbeddedResource Include="..\dist\EMASY-Depurador-2024.zip" LogicalName="payload.zip" />
+    <EmbeddedResource Include="..\resources\params256.png" LogicalName="logo.png" />
   </ItemGroup>
 
 </Project>

@@ -7,13 +7,13 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
     <Product>EMASY</Product>
     <Company>EMASY</Company>
-    <Description>Audita los parámetros del proyecto: usados en planos, usados en tablas y residuales.</Description>
-    <OutputPath>bin\$(Configuration)\EMASY-Parametros-2024\</OutputPath>
+    <Description>Depura el modelo: planos, vistas, filtros y parámetros sin uso.</Description>
+    <OutputPath>bin\$(Configuration)\EMASY-Depurador-2024\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <DefaultItemExcludes>$(DefaultItemExcludes);dist/**;installer/**;tools/**</DefaultItemExcludes>
@@ -42,8 +42,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="resources\audit32.b64" LogicalName="RevitParamAudit.audit32.b64" />
-    <EmbeddedResource Include="resources\audit16.b64" LogicalName="RevitParamAudit.audit16.b64" />
+    <EmbeddedResource Include="resources\sheets32.png" LogicalName="RevitParamAudit.sheets32.png" />
+    <EmbeddedResource Include="resources\sheets16.png" LogicalName="RevitParamAudit.sheets16.png" />
+    <EmbeddedResource Include="resources\views32.png" LogicalName="RevitParamAudit.views32.png" />
+    <EmbeddedResource Include="resources\views16.png" LogicalName="RevitParamAudit.views16.png" />
+    <EmbeddedResource Include="resources\filters32.png" LogicalName="RevitParamAudit.filters32.png" />
+    <EmbeddedResource Include="resources\filters16.png" LogicalName="RevitParamAudit.filters16.png" />
+    <EmbeddedResource Include="resources\params32.png" LogicalName="RevitParamAudit.params32.png" />
+    <EmbeddedResource Include="resources\params16.png" LogicalName="RevitParamAudit.params16.png" />
   </ItemGroup>
 
 </Project>

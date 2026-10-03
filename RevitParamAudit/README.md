@@ -1,45 +1,49 @@
-# EMASY · Auditoría de parámetros (Revit 2024)
+# EMASY · Depurador de modelo (Revit 2024)
 
-Addin hermano de *EMASY DWG Tools*: aparece en la misma pestaña **EMASY**, panel **Parámetros**, botón **Auditar Parámetros**.
+Addin hermano de *EMASY DWG Tools*: aparece en la pestaña **EMASY**, panel **Depurar Modelo**, con cuatro botones que se usan en este orden:
 
-Revisa todos los parámetros del proyecto (de proyecto, compartidos y globales) y los muestra en **una sola tabla**:
+| Paso | Botón | Qué muestra |
+|---|---|---|
+| 1 | **Planos sin uso** | Número, nombre, vistas colocadas y tablas de cada plano. Vacío → ✓, con vistas o tablas → ✗. |
+| 2 | **Vistas sin plano** | Nombre de vista, tipo y **nombre de plano** (o `NA` si no está en ninguno). Las vistas 3D, las que tienen dependientes y las tablas sin plano salen con ⚠. |
+| 3 | **Filtros sin uso** | Nombre de filtro, **activo en vista**, **activo en plano** y en plantillas de vista. |
+| 4 | **Parámetros sin uso** | Parámetro, **activo en plano**, **activo en tabla**, **proceder a eliminar** y **valores** (vacío / con información). |
 
-| Parámetro | Plano | Tabla | Ninguna | Con valores |
-|---|---|---|---|---|
-| Parámetro 1 | ✗ | ✗ | ✓ | No |
+El orden importa: al eliminar planos, sus vistas quedan sin plano (paso 2); al eliminar vistas, sus filtros dejan de usarse (paso 3); y al final los parámetros que ya no aparecen en planos, tablas ni filtros (paso 4). Cada ventana tiene un botón **Siguiente ▸** que abre el paso siguiente.
 
-* **Plano ✓**: valor en planos, viewports, vistas colocadas, cajetines o Información de proyecto, o usado en filtros de vistas colocadas en planos.
-* **Tabla ✓**: usado como campo (incluidos los combinados) en alguna tabla de planificación (el detalle indica cuáles).
-* **Ninguna ✓**: no está ni en planos ni en tablas. Los residuales aparecen primero.
-* **Con valores**: (en los residuales) algún elemento tiene un valor escrito; se perdería al eliminarlo.
+## Símbolos
 
-Tú decides: marca con la casilla los que quieras eliminar (cualquier fila, no solo "Ninguna") y pulsa **Eliminar marcados**. Un filtro permite ver solo los residuales, los residuales sin valores, etc.
+* **✓ verde**: sí / se puede eliminar.
+* **✗ rojo**: no / en uso.
+* **⚠ ámbar**: sin uso, pero con algo que revisar antes de eliminar (vista 3D, información escrita, filtro en vistas fuera de planos, cajetín, familias…). El motivo aparece en la columna *Alertas* / *Advertencias*.
 
-Además de lo anterior, cada fila muestra origen (Proyecto / Compartido / Global), tipo de dato, grupo, vínculo (Ejemplar / Tipo / Solo familias), categorías y, en los residuales, **advertencias** (en naranja) antes de borrar:
+## Ventana (común a los cuatro pasos)
 
-* usado en un filtro de vista que no está en planos,
-* enlazado a Planos / Vistas / Cajetín / Información de proyecto (puede ser una etiqueta de cajetín aunque esté vacío),
-* compartido sin enlace a categorías (viene de familias cargadas y reaparece al recargarlas),
-* tiene valores escritos en elementos (se perderían).
+* **Casilla** de cada fila: tú eliges qué eliminar. Las marcas se mantienen al cambiar el filtro o la búsqueda.
+* **Mostrar**: filtros rápidos (solo ✓, solo ⚠, sin plano, vistas 3D, con información…).
+* **Columnas ▾**: columnas ocultas que se activan una a una (Origen, Tipo de dato, Grupo, Vínculo, Categorías, Id…). En parámetros, también el **análisis profundo**.
+* **Eliminar marcados**: pide confirmación con la lista y los avisos; una sola transacción (Ctrl+Z la deshace).
+* **Ubicar** (o doble clic): abre la vista o plano; en filtros abre una vista donde está activo.
+* **Seleccionar**: selecciona en Revit los planos/vistas, o los elementos que cumplen un filtro.
+* **Exportar CSV**: todas las filas y columnas (✓/✗/⚠ pasan a Sí/No/Revisar).
 
-## Botones
+## Parámetros: qué cuenta como uso
 
-* **Análisis profundo**: además cuenta como "en planos" un parámetro con valor en los elementos visibles en las vistas colocadas en planos. Es más lento y es una señal débil (un valor no implica que se muestre), por eso está apagado por defecto.
-* **Exportar CSV**: todos los parámetros con su estado (separador `;`, UTF-8 con BOM, abre bien en Excel).
-* **Eliminar marcados**: pide confirmación (avisa de los que están en uso o tienen valores) y borra en una sola transacción (se deshace con Ctrl+Z).
+* **Activo en plano**: valor en planos, viewports, vistas colocadas, cajetines (incluidos los compartidos de la familia del cajetín) o Información de proyecto, o usado en un filtro de una vista colocada en un plano.
+* **Activo en tabla**: campo (incluidos los combinados) de alguna tabla de planificación.
+* **Valores**: si algún elemento tiene información escrita. Se calcula con el filtro nativo de Revit "tiene valor", por eso carga mucho más rápido que la versión anterior. Un parámetro sin uso pero **con información** sale con ⚠, no con ✓.
 
 ## Limitaciones
 
-La API de Revit no expone las etiquetas de los cajetines ni de las familias de etiquetas (están dentro de la familia), ni dónde se usan los parámetros globales. Por eso:
-
-* un parámetro mostrado **solo** por una etiqueta o un cajetín y sin valores/filtros/tablas puede aparecer como residual; las advertencias cubren el caso del cajetín por categoría, pero revisa antes de borrar;
-* los parámetros globales se listan como "Global (no evaluado)" y nunca se eliminan desde aquí;
-* no se analizan los parámetros dentro de familias (solo los del proyecto).
+* Las **tablas no usan filtros de vista** (sus filtros son internos de cada tabla), por eso el depurador de filtros no tiene columna "activo en tabla": borrar un filtro de vista nunca afecta a una tabla.
+* La API de Revit no expone las etiquetas de las familias de etiquetas ni dónde se usan los parámetros globales: los globales salen como "—" y no se eliminan desde aquí.
+* La vista activa no se puede eliminar: abre otra vista y repite.
 
 ## Compilar
 
 ```bash
-./build-zip.sh      # dist/EMASY-Parametros-2024.zip y dist/EMASY-Parametros-2024-Setup.exe
+python3 tools/make_icons.py   # solo si cambian los iconos (requiere Pillow)
+./build-zip.sh                # dist/EMASY-Depurador-2024.zip y dist/EMASY-Depurador-2024-Setup.exe
 ```
 
-Requiere el SDK de .NET (net48 / Revit 2024). El instalador copia `EMASY-Parametros.addin` y `EMASY-Parametros-2024/` a `%AppData%\Autodesk\Revit\Addins\2024` y no toca el addin DWG Tools.
+Requiere el SDK de .NET (compila para net48 / Revit 2024 también desde Linux). El instalador copia `EMASY-Depurador.addin` y `EMASY-Depurador-2024/` a `%AppData%\Autodesk\Revit\Addins\2024`, quita la versión anterior *EMASY Parámetros* y no toca DWG Tools.

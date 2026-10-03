@@ -11,7 +11,7 @@ using System.Windows.Forms;
 namespace EmasyInstaller;
 
 /// <summary>
-/// Instalador de EMASY Parámetros para Revit 2024: copia el addin a la carpeta de addins del usuario,
+/// Instalador de EMASY Depurador para Revit 2024: copia el addin a la carpeta de addins del usuario,
 /// elimina versiones anteriores y quita la marca "descargado de Internet" de todos los archivos, para
 /// no tener que desbloquearlos uno a uno.
 /// </summary>
@@ -22,10 +22,10 @@ internal static class Program
 	private static readonly string AddinsFolder = Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Autodesk", "Revit", "Addins", RevitYear);
 
-	/// <summary>Archivos y carpetas de esta versión (el addin EMASY DWG Tools no se toca).</summary>
-	private static readonly string[] ManagedFiles = { "EMASY-Parametros.addin" };
+	/// <summary>Archivos y carpetas de esta versión y de la anterior (EMASY Parámetros); EMASY DWG Tools no se toca.</summary>
+	private static readonly string[] ManagedFiles = { "EMASY-Depurador.addin", "EMASY-Parametros.addin" };
 
-	private static readonly string[] ManagedFolders = { "EMASY-Parametros-" + RevitYear };
+	private static readonly string[] ManagedFolders = { "EMASY-Depurador-" + RevitYear, "EMASY-Parametros-" + RevitYear };
 
 	[STAThread]
 	private static int Main(string[] args)
@@ -55,7 +55,7 @@ internal static class Program
 
 	internal static string TargetFolder => AddinsFolder;
 
-	internal static bool IsInstalled => File.Exists(Path.Combine(AddinsFolder, "EMASY-Parametros.addin"));
+	internal static bool IsInstalled => File.Exists(Path.Combine(AddinsFolder, "EMASY-Depurador.addin"));
 
 	internal static bool IsRevitRunning => Process.GetProcessesByName("Revit").Length > 0;
 
@@ -88,15 +88,15 @@ internal static class Program
 
 		// Los archivos que escribe el instalador no llevan la marca de "descargado"; por si acaso, se quita.
 		UnblockAll();
-		return $"EMASY Parámetros instalado en:\n{AddinsFolder}\n\nTodos los archivos quedaron listos (sin bloqueo de Windows). Abre Revit {RevitYear}: pestaña EMASY → Parámetros.";
+		return $"EMASY Depurador instalado en:\n{AddinsFolder}\n\nTodos los archivos quedaron listos (sin bloqueo de Windows). Abre Revit {RevitYear}: pestaña EMASY → Depurar Modelo.";
 	}
 
 	internal static string Uninstall()
 	{
 		int removed = RemoveManaged();
 		return removed > 0
-			? $"EMASY Parámetros se desinstaló de Revit {RevitYear}."
-			: "No se encontró EMASY Parámetros instalado.";
+			? $"EMASY Depurador se desinstaló de Revit {RevitYear}."
+			: "No se encontró EMASY Depurador instalado.";
 	}
 
 	private static int RemoveManaged()
@@ -161,7 +161,7 @@ internal sealed class InstallerForm : Form
 
 	public InstallerForm()
 	{
-		Text = "EMASY Parámetros · Revit 2024";
+		Text = "EMASY Depurador · Revit 2024";
 		FormBorderStyle = FormBorderStyle.FixedDialog;
 		MaximizeBox = false;
 		MinimizeBox = false;
@@ -188,14 +188,14 @@ internal sealed class InstallerForm : Form
 
 		var title = new Label
 		{
-			Text = "EMASY · Parámetros",
+			Text = "EMASY · Depurador",
 			Font = new Font("Segoe UI", 16f, FontStyle.Bold),
 			Location = new Point(135, 22),
 			AutoSize = true
 		};
 		var subtitle = new Label
 		{
-			Text = "Auditoría de parámetros: planos, tablas y residuales · Revit 2024",
+			Text = "Depura planos, vistas, filtros y parámetros sin uso · Revit 2024",
 			Location = new Point(137, 58),
 			AutoSize = true,
 			ForeColor = Color.DimGray
@@ -239,7 +239,7 @@ internal sealed class InstallerForm : Form
 		{
 			DialogResult answer = MessageBox.Show(this,
 				"Revit está abierto. Ciérralo (guarda tu trabajo) y pulsa Reintentar, porque mientras está abierto los archivos del addin están en uso.",
-				"EMASY Parámetros", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning);
+				"EMASY Depurador", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning);
 			if (answer == DialogResult.Cancel)
 			{
 				return;
@@ -282,7 +282,7 @@ internal sealed class DoneDialog : Form
 {
 	public DoneDialog(string message)
 	{
-		Text = "EMASY Parámetros";
+		Text = "EMASY Depurador";
 		FormBorderStyle = FormBorderStyle.FixedDialog;
 		MaximizeBox = false;
 		MinimizeBox = false;
