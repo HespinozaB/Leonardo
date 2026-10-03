@@ -4,7 +4,7 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 
-namespace RevitParamAudit.Core;
+namespace RevitDwgExploder.Depurador;
 
 internal static class RevitUtil
 {

@@ -137,8 +137,32 @@ public class App : IExternalApplication
 			Image = LoadIcon("RevitDwgExploder.imgfinder16.png"),
 			AvailabilityClassName = "RevitDwgExploder.Commands.DwgFinderAvailability"
 		});
+
+		// Depurar Modelo: cuatro pasos en orden (planos, vistas, filtros, parámetros).
+		RibbonPanel cleanPanel = application.CreateRibbonPanel(TabName, "Depurar Modelo");
+		cleanPanel.AddItem(DepuradorButton(assemblyPath, "SheetsCommand", "1 · Planos" + Environment.NewLine + "sin uso", "sheets",
+			"Paso 1. Lista los planos con sus vistas y tablas para elegir cuáles conservar y cuáles eliminar. " +
+			"Los planos vacíos salen con ✓; los que tienen vistas o tablas con ✗."));
+		cleanPanel.AddItem(DepuradorButton(assemblyPath, "ViewsCommand", "2 · Vistas" + Environment.NewLine + "sin plano", "views",
+			"Paso 2. Lista las vistas con el plano donde están colocadas (NA si no están en ninguno). " +
+			"Permite eliminarlas, ubicarlas o seleccionarlas. Las vistas 3D salen con alerta."));
+		cleanPanel.AddItem(DepuradorButton(assemblyPath, "FiltersCommand", "3 · Filtros" + Environment.NewLine + "sin uso", "filters",
+			"Paso 3. Lista los filtros de vista con las vistas, planos y plantillas donde están activos, " +
+			"para eliminar los que no se usan."));
+		cleanPanel.AddItem(DepuradorButton(assemblyPath, "ParametersCommand", "4 · Parámetros" + Environment.NewLine + "sin uso", "params",
+			"Paso 4. Lista los parámetros activos en planos y en tablas, indica si tienen información y permite " +
+			"eliminar los residuales. Exporta a CSV."));
 		return Result.Succeeded;
 	}
+
+	private static PushButtonData DepuradorButton(string assemblyPath, string command, string text, string icon, string tooltip) =>
+		new PushButtonData(command, text, assemblyPath, "RevitDwgExploder.Depurador.Commands." + command)
+		{
+			ToolTip = tooltip,
+			LargeImage = LoadIcon($"RevitDwgExploder.{icon}32.png"),
+			Image = LoadIcon($"RevitDwgExploder.{icon}16.png"),
+			AvailabilityClassName = "RevitDwgExploder.Depurador.Commands.DepuradorAvailability"
+		};
 
 	public Result OnShutdown(UIControlledApplication application)
 	{

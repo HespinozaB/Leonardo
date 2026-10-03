@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Tools;
+namespace RevitDwgExploder.Depurador.Tools;
 
 /// <summary>Paso 2: todas las vistas con el plano donde están colocadas ("NA" si no están en ninguno).</summary>
 internal sealed class ViewsDepurador : IDepurador

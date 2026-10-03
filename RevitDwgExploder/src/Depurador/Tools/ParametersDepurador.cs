@@ -2,9 +2,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Tools;
+namespace RevitDwgExploder.Depurador.Tools;
 
 /// <summary>Paso 4: parámetros activos en planos, en tablas y los que se pueden eliminar.</summary>
 internal sealed class ParametersDepurador : IDepurador

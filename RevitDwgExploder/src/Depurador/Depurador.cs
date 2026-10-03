@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Tools;
+using RevitDwgExploder.Depurador.Tools;
 
-namespace RevitParamAudit.Core;
+namespace RevitDwgExploder.Depurador;
 
 /// <summary>Los cuatro depuradores, en el orden recomendado de uso.</summary>
 internal enum ToolKind

@@ -2,9 +2,9 @@ using System;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Commands;
+namespace RevitDwgExploder.Depurador.Commands;
 
 public abstract class DepuradorCommand : IExternalCommand
 {

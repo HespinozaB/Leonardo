@@ -6,9 +6,9 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using ExternalEvent = Autodesk.Revit.UI.ExternalEvent;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.UI;
+namespace RevitDwgExploder.Depurador.UI;
 
 /// <summary>
 /// Ventana no modal común a los cuatro depuradores: tabla con casillas para elegir qué eliminar, columnas de estado

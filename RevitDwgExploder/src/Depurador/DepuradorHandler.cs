@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.UI;
+using RevitDwgExploder.Depurador.UI;
 
-namespace RevitParamAudit.Core;
+namespace RevitDwgExploder.Depurador;
 
 internal enum DepAction
 {

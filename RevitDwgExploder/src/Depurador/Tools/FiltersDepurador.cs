@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Tools;
+namespace RevitDwgExploder.Depurador.Tools;
 
 /// <summary>
 /// Paso 3: los filtros de vista (de reglas y de selección) con las vistas, planos y plantillas donde están aplicados.

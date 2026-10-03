@@ -36,6 +36,25 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.18
+
+### Nuevo grupo Depurar Modelo
+
+Cuatro botones que se usan en orden; cada ventana tiene **Siguiente ▸** para pasar al paso siguiente:
+
+| Paso | Botón | Qué muestra |
+|---|---|---|
+| 1 | **Planos sin uso** | Número, nombre, vistas colocadas y tablas de cada plano. Vacío → ✓, con vistas o tablas → ✗. |
+| 2 | **Vistas sin plano** | Nombre de vista, tipo y nombre de plano (`NA` si no está en ninguno). Vistas 3D, con dependientes y tablas sin plano → ⚠. |
+| 3 | **Filtros sin uso** | Activo en vista, activo en plano y en plantillas de vista. |
+| 4 | **Parámetros sin uso** | Activo en plano, activo en tabla, proceder a eliminar y valores (vacío / con información). |
+
+* Marcas: **✓ verde** sí / se puede eliminar, **✗ rojo** no / en uso, **⚠ ámbar** sin uso pero con algo que revisar (el motivo está en *Alertas*).
+* Casillas para elegir qué eliminar; **Eliminar** (con confirmación, se deshace con Ctrl+Z), **Ubicar** (o doble clic), **Seleccionar**, **Exportar CSV** y **Columnas ▾** para mostrar una a una las columnas ocultas.
+* Parámetros: los valores se buscan con el filtro nativo de Revit "tiene valor", así que la ventana carga rápido. Un parámetro sin uso pero con información sale con ⚠.
+* Las tablas no usan filtros de vista: borrar un filtro nunca afecta a una tabla.
+* El instalador quita el Depurador si antes se instaló aparte (*EMASY Parámetros* / *EMASY Depurador*), para que no aparezca dos veces.
+
 ## Cambios de la versión 1.17
 
 ### Explotar imágenes: máxima interpretación y calidad de imagen

@@ -22,10 +22,10 @@ internal static class Program
 	private static readonly string AddinsFolder = Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Autodesk", "Revit", "Addins", RevitYear);
 
-	/// <summary>Archivos y carpetas de esta versión y de las anteriores (RevitDwgExploder).</summary>
-	private static readonly string[] ManagedFiles = { "EMASY.addin", "RevitDwgExploder.addin" };
+	/// <summary>Archivos y carpetas de esta versión y de las anteriores (RevitDwgExploder) y del Depurador cuando se instalaba aparte.</summary>
+	private static readonly string[] ManagedFiles = { "EMASY.addin", "RevitDwgExploder.addin", "EMASY-Depurador.addin", "EMASY-Parametros.addin" };
 
-	private static readonly string[] ManagedFolders = { "EMASY-" + RevitYear, "RevitDwgExploder-" + RevitYear };
+	private static readonly string[] ManagedFolders = { "EMASY-" + RevitYear, "RevitDwgExploder-" + RevitYear, "EMASY-Depurador-" + RevitYear, "EMASY-Parametros-" + RevitYear };
 
 	[STAThread]
 	private static int Main(string[] args)
@@ -88,7 +88,7 @@ internal static class Program
 
 		// Los archivos que escribe el instalador no llevan la marca de "descargado"; por si acaso, se quita.
 		UnblockAll();
-		return $"EMASY DWG Tools instalado en:\n{AddinsFolder}\n\nTodos los archivos quedaron listos (sin bloqueo de Windows). Abre Revit {RevitYear}: pestaña EMASY → DWG Tools.";
+		return $"EMASY DWG Tools instalado en:\n{AddinsFolder}\n\nTodos los archivos quedaron listos (sin bloqueo de Windows). Abre Revit {RevitYear}: pestaña EMASY (DWG, PDF, Imágenes y Depurar Modelo).";
 	}
 
 	internal static string Uninstall()
@@ -195,7 +195,7 @@ internal sealed class InstallerForm : Form
 		};
 		var subtitle = new Label
 		{
-			Text = "Explotar DWG y PDF a elementos nativos · Revit 2024",
+			Text = "Explotar DWG, PDF e imágenes · Depurar el modelo · Revit 2024",
 			Location = new Point(137, 58),
 			AutoSize = true,
 			ForeColor = Color.DimGray

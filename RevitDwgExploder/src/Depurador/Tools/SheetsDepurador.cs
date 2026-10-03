@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Tools;
+namespace RevitDwgExploder.Depurador.Tools;
 
 /// <summary>Paso 1: los planos del modelo, con sus vistas y tablas, para elegir cuáles conservar y cuáles eliminar.</summary>
 internal sealed class SheetsDepurador : IDepurador

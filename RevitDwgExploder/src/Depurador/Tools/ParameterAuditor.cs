@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
-using RevitParamAudit.Core;
+using RevitDwgExploder.Depurador;
 
-namespace RevitParamAudit.Tools;
+namespace RevitDwgExploder.Depurador.Tools;
 
 /// <summary>Un parámetro del proyecto con el resultado de la auditoría.</summary>
 internal sealed class ParamEntry
