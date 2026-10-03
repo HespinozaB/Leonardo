@@ -36,6 +36,12 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.18.1
+
+### Depurar Modelo mucho más rápido
+* **Planos sin uso** ya no obliga a Revit a "generar gráficos" de cada plano: las anotaciones de todos los planos se cuentan en una sola pasada. En modelos con cientos de planos pasa de muchos minutos a segundos, también al refrescar la lista después de eliminar.
+* **Eliminar** borra todo lo marcado de una sola vez (Revit regenera una vez, no una por elemento). Si algo no se puede borrar, sigue uno por uno e informa cuál.
+
 ## Cambios de la versión 1.18
 
 ### Nuevo grupo Depurar Modelo

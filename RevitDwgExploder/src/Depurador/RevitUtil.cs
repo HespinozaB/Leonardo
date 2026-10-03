@@ -121,39 +121,77 @@ internal static class RevitUtil
 			FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
 			options.SetFailuresPreprocessor(new SwallowWarnings());
 			transaction.SetFailureHandlingOptions(options);
+			var batch = new List<ElementId>();
 			foreach (long id in ids)
 			{
 				Element element = doc.GetElement(new ElementId(id));
 				if (element == null)
 				{
-					// Ya se eliminó junto con otro (p. ej. una vista dependiente con su vista principal).
+					// Ya se eliminó antes (p. ej. una vista dependiente con su vista principal).
 					gone++;
 					continue;
 				}
 
-				string name = SafeName(element);
 				string reason = veto?.Invoke(element);
 				if (reason != null)
 				{
-					problems.Add($"{name}: {reason}");
+					problems.Add($"{SafeName(element)}: {reason}");
 					continue;
 				}
 
-				try
+				batch.Add(element.Id);
+			}
+
+			// Todo de una vez: Revit regenera una sola vez en lugar de una por elemento.
+			bool batched = false;
+			if (deleteOne == null && batch.Count > 0)
+			{
+				using (var sub = new SubTransaction(doc))
 				{
-					bool ok = deleteOne != null ? deleteOne(doc, element) : doc.Delete(element.Id).Count > 0;
-					if (ok)
+					sub.Start();
+					try
 					{
-						deleted++;
+						doc.Delete(batch);
+						sub.Commit();
+						batched = true;
+						deleted = batch.Count(id => doc.GetElement(id) == null);
 					}
-					else
+					catch (Exception)
 					{
-						problems.Add($"{name}: Revit no lo eliminó");
+						// Algún elemento no se puede eliminar: se sigue uno por uno para saber cuál.
+						sub.RollBack();
 					}
 				}
-				catch (Exception ex)
+			}
+
+			if (!batched)
+			{
+				foreach (ElementId id in batch)
 				{
-					problems.Add($"{name}: {ex.Message}");
+					Element element = doc.GetElement(id);
+					if (element == null)
+					{
+						gone++;
+						continue;
+					}
+
+					string name = SafeName(element);
+					try
+					{
+						bool ok = deleteOne != null ? deleteOne(doc, element) : doc.Delete(id).Count > 0;
+						if (ok)
+						{
+							deleted++;
+						}
+						else
+						{
+							problems.Add($"{name}: Revit no lo eliminó");
+						}
+					}
+					catch (Exception ex)
+					{
+						problems.Add($"{name}: {ex.Message}");
+					}
 				}
 			}
 

@@ -82,12 +82,14 @@ internal sealed class SheetsDepurador : IDepurador
 			names.Add(doc.GetElement(instance.ScheduleId)?.Name ?? instance.Name);
 		}
 
+		List<ViewSheet> sheets = new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>().ToList();
+		Dictionary<long, int> annotations = CountAnnotations(doc, sheets);
 		var rows = new List<DepRow>();
-		foreach (ViewSheet sheet in new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>())
+		foreach (ViewSheet sheet in sheets)
 		{
 			try
 			{
-				rows.Add(MakeRow(doc, sheet, schedulesBySheet, activeId, open));
+				rows.Add(MakeRow(doc, sheet, schedulesBySheet, annotations, activeId, open));
 			}
 			catch (Exception ex)
 			{
@@ -101,7 +103,8 @@ internal sealed class SheetsDepurador : IDepurador
 			.ToList();
 	}
 
-	private static DepRow MakeRow(Document doc, ViewSheet sheet, Dictionary<long, List<string>> schedulesBySheet, long activeId, HashSet<long> open)
+	private static DepRow MakeRow(Document doc, ViewSheet sheet, Dictionary<long, List<string>> schedulesBySheet,
+		Dictionary<long, int> annotationsBySheet, long activeId, HashSet<long> open)
 	{
 		var views = new List<string>();
 		foreach (ElementId viewportId in sheet.GetAllViewports())
@@ -115,7 +118,7 @@ internal sealed class SheetsDepurador : IDepurador
 		views.Sort(StringComparer.CurrentCultureIgnoreCase);
 		List<string> schedules = schedulesBySheet.TryGetValue(sheet.Id.Value, out List<string> found) ? found : new List<string>();
 		schedules.Sort(StringComparer.CurrentCultureIgnoreCase);
-		int annotations = sheet.IsPlaceholder ? 0 : CountAnnotations(doc, sheet);
+		int annotations = annotationsBySheet.TryGetValue(sheet.Id.Value, out int count) ? count : 0;
 
 		var alerts = new List<string>();
 		bool review = false;
@@ -167,25 +170,41 @@ internal sealed class SheetsDepurador : IDepurador
 		};
 	}
 
-	/// <summary>Elementos dibujados en el plano que no son el cajetín, viewports ni tablas (textos, líneas, imágenes…).</summary>
-	private static int CountAnnotations(Document doc, ViewSheet sheet)
+	/// <summary>
+	/// Elementos dibujados en cada plano que no son el cajetín, viewports ni tablas (textos, líneas, imágenes…).
+	/// Se cuentan en una sola pasada por los elementos propios de vista: un recolector por plano obligaría a Revit a
+	/// generar los gráficos de cada plano, que es lentísimo en modelos grandes.
+	/// </summary>
+	private static Dictionary<long, int> CountAnnotations(Document doc, List<ViewSheet> sheets)
 	{
+		var counts = new Dictionary<long, int>();
+		var sheetIds = new HashSet<long>(sheets.Select(s => s.Id.Value));
+		var skip = new HashSet<long>
+		{
+			(long)BuiltInCategory.OST_TitleBlocks,
+			(long)BuiltInCategory.OST_Viewports,
+			(long)BuiltInCategory.OST_ScheduleGraphics
+		};
 		try
 		{
-			var skip = new HashSet<long>
+			// Elementos cuya vista propietaria NO es "ninguna" = elementos propios de alguna vista.
+			var viewOwned = new ElementOwnerViewFilter(ElementId.InvalidElementId, true);
+			foreach (Element element in new FilteredElementCollector(doc).WhereElementIsNotElementType().WherePasses(viewOwned))
 			{
-				(long)BuiltInCategory.OST_TitleBlocks,
-				(long)BuiltInCategory.OST_Viewports,
-				(long)BuiltInCategory.OST_ScheduleGraphics
-			};
-			return new FilteredElementCollector(doc, sheet.Id)
-				.WhereElementIsNotElementType()
-				.Count(e => e.Category != null && !skip.Contains(e.Category.Id.Value) && e.OwnerViewId == sheet.Id);
+				long owner = element.OwnerViewId.Value;
+				if (!sheetIds.Contains(owner) || element.Category == null || skip.Contains(element.Category.Id.Value))
+				{
+					continue;
+				}
+
+				counts[owner] = counts.TryGetValue(owner, out int n) ? n + 1 : 1;
+			}
 		}
 		catch (Exception)
 		{
-			return 0;
 		}
+
+		return counts;
 	}
 
 	public IEnumerable<string> DeleteNotes(List<DepRow> rows)
