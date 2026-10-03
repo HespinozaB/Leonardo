@@ -144,7 +144,7 @@ internal static class RevitUtil
 
 			// Todo de una vez: Revit regenera una sola vez en lugar de una por elemento.
 			bool batched = false;
-			if (deleteOne == null && batch.Count > 0)
+			if (batch.Count > 0)
 			{
 				using (var sub = new SubTransaction(doc))
 				{
@@ -158,7 +158,7 @@ internal static class RevitUtil
 					}
 					catch (Exception)
 					{
-						// Algún elemento no se puede eliminar: se sigue uno por uno para saber cuál.
+						// Algún elemento no se puede eliminar así: se sigue uno por uno (con el método propio, si lo hay).
 						sub.RollBack();
 					}
 				}

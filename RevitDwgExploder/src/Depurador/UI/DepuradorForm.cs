@@ -92,6 +92,7 @@ internal sealed class DepuradorForm : Form
 			: tool.Columns.Select(c => !c.HiddenByDefault).ToArray();
 		_handler.OnRows = (rows, title, message) => RunOnUi(() => SetRows(rows, title, message));
 		_handler.OnMessage = message => RunOnUi(() => SetMessage(message));
+		_handler.OnDeleted = (removed, message) => RunOnUi(() => RemoveRows(removed, message));
 		BuildLayout();
 		RebuildColumns();
 		FormClosed += (s, e) =>
@@ -348,6 +349,7 @@ internal sealed class DepuradorForm : Form
 		_handler.Deep = _deep.Checked;
 		_handler.DocumentTitle = _documentTitle;
 		_handler.Ids = ids;
+		_handler.RowIds = _rows.Select(r => r.Id).ToList();
 		_busy = true;
 		SetStatus(busyText);
 		Cursor = Cursors.WaitCursor;
@@ -365,6 +367,18 @@ internal sealed class DepuradorForm : Form
 		Cursor = Cursors.Default;
 		Populate();
 		SetStatus(string.IsNullOrEmpty(message) ? Summary() : Summary() + "  —  " + message);
+	}
+
+	/// <summary>Quita de la lista lo que se eliminó, sin volver a analizar el modelo (usa "Actualizar" para recalcular).</summary>
+	private void RemoveRows(List<long> removed, string message)
+	{
+		var gone = new HashSet<long>(removed);
+		_rows = _rows.Where(r => !gone.Contains(r.Id)).ToList();
+		_checked.ExceptWith(gone);
+		_busy = false;
+		Cursor = Cursors.Default;
+		Populate();
+		SetStatus(Summary() + "  —  " + message);
 	}
 
 	private void SetMessage(string message)

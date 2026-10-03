@@ -32,6 +32,9 @@ internal sealed class DepuradorHandler : IExternalEventHandler
 
 	public List<long> Ids = new List<long>();
 
+	/// <summary>Ids de todas las filas mostradas (para saber cuáles desaparecieron al eliminar).</summary>
+	public List<long> RowIds = new List<long>();
+
 	/// <summary>Modelo al que pertenece la lista mostrada (las acciones solo se aplican a ese modelo).</summary>
 	public string DocumentTitle;
 
@@ -40,6 +43,9 @@ internal sealed class DepuradorHandler : IExternalEventHandler
 
 	/// <summary>Solo un mensaje (la lista no cambió).</summary>
 	public Action<string> OnMessage;
+
+	/// <summary>Tras eliminar: filas que ya no existen y mensaje (no se vuelve a analizar todo el modelo).</summary>
+	public Action<List<long>, string> OnDeleted;
 
 	public void Execute(UIApplication app)
 	{
@@ -76,8 +82,12 @@ internal sealed class DepuradorHandler : IExternalEventHandler
 				switch (Action)
 				{
 					case DepAction.Delete:
-						message = _tool.Delete(uiDoc, Ids);
-						break;
+					{
+						string result = _tool.Delete(uiDoc, Ids);
+						List<long> removed = RowIds.FindAll(id => doc.GetElement(new ElementId(id)) == null);
+						OnDeleted?.Invoke(removed, result);
+						return;
+					}
 					case DepAction.Locate:
 						OnMessage?.Invoke(_tool.Locate(uiDoc, Ids));
 						return;

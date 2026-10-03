@@ -10,10 +10,6 @@ namespace RevitDwgExploder.Depurador.Tools;
 /// <summary>Paso 1: los planos del modelo, con sus vistas y tablas, para elegir cuáles conservar y cuáles eliminar.</summary>
 internal sealed class SheetsDepurador : IDepurador
 {
-	private const int ColViews = 2;
-
-	private const int ColSchedules = 3;
-
 	private sealed class Info
 	{
 		public int Views;
@@ -44,9 +40,7 @@ internal sealed class SheetsDepurador : IDepurador
 		new ColumnSpec("Vistas colocadas", 320),
 		new ColumnSpec("Tablas", 240),
 		new ColumnSpec("Proceder a eliminar", 125, center: true),
-		new ColumnSpec("Alertas", 340, optional: true),
-		new ColumnSpec("Otras anotaciones", 115, optional: true, hidden: true, numeric: true),
-		new ColumnSpec("Id", 80, optional: true, hidden: true, numeric: true)
+		new ColumnSpec("Alertas", 340, optional: true)
 	};
 
 	public FilterSpec[] Filters { get; } =
@@ -83,13 +77,12 @@ internal sealed class SheetsDepurador : IDepurador
 		}
 
 		List<ViewSheet> sheets = new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>().ToList();
-		Dictionary<long, int> annotations = CountAnnotations(doc, sheets);
 		var rows = new List<DepRow>();
 		foreach (ViewSheet sheet in sheets)
 		{
 			try
 			{
-				rows.Add(MakeRow(doc, sheet, schedulesBySheet, annotations, activeId, open));
+				rows.Add(MakeRow(doc, sheet, schedulesBySheet, activeId, open));
 			}
 			catch (Exception ex)
 			{
@@ -103,8 +96,7 @@ internal sealed class SheetsDepurador : IDepurador
 			.ToList();
 	}
 
-	private static DepRow MakeRow(Document doc, ViewSheet sheet, Dictionary<long, List<string>> schedulesBySheet,
-		Dictionary<long, int> annotationsBySheet, long activeId, HashSet<long> open)
+	private static DepRow MakeRow(Document doc, ViewSheet sheet, Dictionary<long, List<string>> schedulesBySheet, long activeId, HashSet<long> open)
 	{
 		var views = new List<string>();
 		foreach (ElementId viewportId in sheet.GetAllViewports())
@@ -118,7 +110,6 @@ internal sealed class SheetsDepurador : IDepurador
 		views.Sort(StringComparer.CurrentCultureIgnoreCase);
 		List<string> schedules = schedulesBySheet.TryGetValue(sheet.Id.Value, out List<string> found) ? found : new List<string>();
 		schedules.Sort(StringComparer.CurrentCultureIgnoreCase);
-		int annotations = annotationsBySheet.TryGetValue(sheet.Id.Value, out int count) ? count : 0;
 
 		var alerts = new List<string>();
 		bool review = false;
@@ -136,12 +127,6 @@ internal sealed class SheetsDepurador : IDepurador
 		else if (open.Contains(sheet.Id.Value))
 		{
 			alerts.Add("Abierto en una ventana");
-		}
-
-		if (views.Count + schedules.Count == 0 && annotations > 0)
-		{
-			alerts.Add($"Sin vistas, pero con {annotations} anotación(es) dibujadas en el plano");
-			review = true;
 		}
 
 		if (views.Count > 0)
@@ -163,48 +148,9 @@ internal sealed class SheetsDepurador : IDepurador
 				Marks.List(views),
 				Marks.List(schedules),
 				Marks.Of(verdict),
-				string.Join("; ", alerts),
-				annotations.ToString(),
-				sheet.Id.Value.ToString()
+				string.Join("; ", alerts)
 			}
 		};
-	}
-
-	/// <summary>
-	/// Elementos dibujados en cada plano que no son el cajetín, viewports ni tablas (textos, líneas, imágenes…).
-	/// Se cuentan en una sola pasada por los elementos propios de vista: un recolector por plano obligaría a Revit a
-	/// generar los gráficos de cada plano, que es lentísimo en modelos grandes.
-	/// </summary>
-	private static Dictionary<long, int> CountAnnotations(Document doc, List<ViewSheet> sheets)
-	{
-		var counts = new Dictionary<long, int>();
-		var sheetIds = new HashSet<long>(sheets.Select(s => s.Id.Value));
-		var skip = new HashSet<long>
-		{
-			(long)BuiltInCategory.OST_TitleBlocks,
-			(long)BuiltInCategory.OST_Viewports,
-			(long)BuiltInCategory.OST_ScheduleGraphics
-		};
-		try
-		{
-			// Elementos cuya vista propietaria NO es "ninguna" = elementos propios de alguna vista.
-			var viewOwned = new ElementOwnerViewFilter(ElementId.InvalidElementId, true);
-			foreach (Element element in new FilteredElementCollector(doc).WhereElementIsNotElementType().WherePasses(viewOwned))
-			{
-				long owner = element.OwnerViewId.Value;
-				if (!sheetIds.Contains(owner) || element.Category == null || skip.Contains(element.Category.Id.Value))
-				{
-					continue;
-				}
-
-				counts[owner] = counts.TryGetValue(owner, out int n) ? n + 1 : 1;
-			}
-		}
-		catch (Exception)
-		{
-		}
-
-		return counts;
 	}
 
 	public IEnumerable<string> DeleteNotes(List<DepRow> rows)
