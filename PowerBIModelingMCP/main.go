@@ -1,8 +1,9 @@
-// Instalador del Power BI Modeling MCP Server (Microsoft) para Claude Desktop y Claude Code.
+// Instalador del Power BI Modeling MCP Server (Microsoft) para Claude Desktop y Claude Code,
+// más un segundo servidor MCP propio ("powerbi-report", ver mcp.go) para leer y generar gráficos.
 //
 // No incluye el binario de Microsoft: lo descarga del Visual Studio Marketplace oficial
 // (extensión analysis-services.powerbi-modeling-mcp, plataforma win32-x64), lo extrae en
-// %LOCALAPPDATA%\PowerBIModelingMCP y registra el servidor en la configuración de Claude.
+// %LOCALAPPDATA%\PowerBIModelingMCP y registra ambos servidores en la configuración de Claude.
 package main
 
 import (
@@ -28,6 +29,8 @@ const (
 	fallbackVer    = "0.4.0"
 	serverExe      = "powerbi-modeling-mcp.exe"
 	mcpName        = "powerbi-modeling"
+	reportMcpName  = "powerbi-report"
+	reportExe      = "powerbi-report-mcp.exe"
 	queryURL       = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
 	downloadURLFmt = "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/analysis-services/vsextensions/powerbi-modeling-mcp/%s/vspackage?targetPlatform=win32-x64"
 )
@@ -38,15 +41,25 @@ var (
 )
 
 func main() {
+	cmd, rest := "", os.Args[1:]
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		cmd, rest = rest[0], rest[1:]
+	}
+	// Modo servidor MCP: stdout es el canal del protocolo, no se imprime nada más.
+	if cmd == "serve" {
+		runServer()
+		return
+	}
+
 	dir := flag.String("dir", defaultInstallDir(), "carpeta de instalación")
 	ver := flag.String("version", "", "versión del servidor (por defecto la última del Marketplace)")
 	readOnly := flag.Bool("readonly", false, "registrar el servidor en modo solo lectura (--readonly)")
 	flag.BoolVar(&assumeYes, "yes", false, "responder sí a todo (modo desatendido)")
 	flag.Usage = func() {
-		fmt.Println("Uso: PowerBI-Modeling-MCP-Setup.exe [install|uninstall|status] [opciones]")
+		fmt.Println("Uso: PowerBI-Modeling-MCP-Setup.exe [install|uninstall|status|serve] [opciones]")
 		flag.PrintDefaults()
 	}
-	flag.Parse()
+	flag.CommandLine.Parse(rest)
 
 	fmt.Println("==============================================")
 	fmt.Println("  Power BI Modeling MCP - Instalador para Claude")
@@ -55,7 +68,6 @@ func main() {
 		fmt.Println("AVISO: el servidor solo funciona en Windows (requiere Power BI Desktop).")
 	}
 
-	cmd := flag.Arg(0)
 	if cmd == "" {
 		cmd = menu()
 	}
@@ -207,9 +219,20 @@ func install(dir, ver string, readOnly bool) error {
 	}
 	fmt.Println("  Servidor:", exe)
 
+	// Copia de este mismo programa como servidor de gráficos (powerbi-report).
+	repExe := filepath.Join(dir, reportExe)
+	if err := copySelf(repExe); err != nil {
+		return fmt.Errorf("no se pudo instalar %s: %w", reportExe, err)
+	}
+	fmt.Println("  Gráficos:", repExe)
+
 	args := []string{"--start"}
 	if readOnly {
 		args = append(args, "--readonly")
+	}
+	entries := map[string]serverEntry{
+		mcpName:       {exe, args},
+		reportMcpName: {repExe, []string{"serve"}},
 	}
 
 	fmt.Println()
@@ -224,7 +247,7 @@ func install(dir, ver string, readOnly bool) error {
 		if !askYesNo(q, exists) {
 			continue
 		}
-		if err := writeEntry(t, exe, args); err != nil {
+		if err := writeEntries(t, entries); err != nil {
 			fmt.Printf("  ! %s: %v\n", t.name, err)
 			continue
 		}
@@ -237,13 +260,19 @@ func install(dir, ver string, readOnly bool) error {
 	fmt.Println("==============================================")
 	if configured == 0 {
 		fmt.Println("No se configuró ningún cliente. Agregue esto manualmente en \"mcpServers\":")
-		b, _ := json.MarshalIndent(map[string]any{mcpName: map[string]any{"command": exe, "args": args}}, "  ", "  ")
+		manual := map[string]any{}
+		for n, e := range entries {
+			manual[n] = map[string]any{"command": e.command, "args": e.args}
+		}
+		b, _ := json.MarshalIndent(manual, "  ", "  ")
 		fmt.Println("  " + string(b))
 	}
 	fmt.Println("Siguientes pasos:")
 	fmt.Println("  1. Abra su archivo .pbix en Power BI Desktop.")
 	fmt.Println("  2. Reinicie Claude Desktop / Claude Code.")
 	fmt.Println("  3. Pida: \"Conéctate a <nombre del archivo> en Power BI Desktop\".")
+	fmt.Println("  4. Para gráficos, guarde el reporte como .pbip (formato PBIR) y pida, p. ej.:")
+	fmt.Println("     \"Lee los gráficos de C:\\Reportes\\Ventas.pbip\" o \"Crea un gráfico de columnas de ventas por región\".")
 	fmt.Println("\nLicencia del servidor (Microsoft, PREVIEW):", filepath.Join(dir, "extension", "LICENSE.txt"))
 	return nil
 }
@@ -414,7 +443,12 @@ func saveJSON(path string, m map[string]any) error {
 	return os.Rename(tmp, path)
 }
 
-func writeEntry(t claudeTarget, exe string, args []string) error {
+type serverEntry struct {
+	command string
+	args    []string
+}
+
+func writeEntries(t claudeTarget, entries map[string]serverEntry) error {
 	m, err := loadJSON(t.path)
 	if err != nil {
 		return err
@@ -423,14 +457,31 @@ func writeEntry(t claudeTarget, exe string, args []string) error {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	entry := map[string]any{"command": exe, "args": args}
-	if t.code {
-		entry["type"] = "stdio"
-		entry["env"] = map[string]any{}
+	for name, e := range entries {
+		entry := map[string]any{"command": e.command, "args": e.args}
+		if t.code {
+			entry["type"] = "stdio"
+			entry["env"] = map[string]any{}
+		}
+		servers[name] = entry
 	}
-	servers[mcpName] = entry
 	m["mcpServers"] = servers
 	return saveJSON(t.path, m)
+}
+
+func copySelf(dst string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if same, _ := filepath.Abs(self); strings.EqualFold(same, dst) {
+		return nil
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o755)
 }
 
 func removeEntry(t claudeTarget) (bool, error) {
@@ -442,17 +493,23 @@ func removeEntry(t claudeTarget) (bool, error) {
 		return false, err
 	}
 	servers, _ := m["mcpServers"].(map[string]any)
-	if _, ok := servers[mcpName]; !ok {
+	removed := false
+	for _, n := range []string{mcpName, reportMcpName} {
+		if _, ok := servers[n]; ok {
+			delete(servers, n)
+			removed = true
+		}
+	}
+	if !removed {
 		return false, nil
 	}
-	delete(servers, mcpName)
 	return true, saveJSON(t.path, m)
 }
 
 // ── Desinstalar / estado ─────────────────────────────────────────────
 
 func uninstall(dir string) error {
-	if !askYesNo("¿Quitar el servidor de Claude y borrar "+dir+"?", true) {
+	if !askYesNo("¿Quitar los servidores de Claude y borrar "+dir+"?", true) {
 		return nil
 	}
 	for _, t := range claudeTargets() {
@@ -479,6 +536,9 @@ func status(dir string) {
 	} else {
 		fmt.Println("Servidor :", exe)
 	}
+	if rep := findFile(dir, reportExe); rep != "" {
+		fmt.Println("Gráficos :", rep)
+	}
 	for _, t := range claudeTargets() {
 		m, err := loadJSON(t.path)
 		state := "no configurado"
@@ -486,8 +546,16 @@ func status(dir string) {
 			state = "sin archivo de configuración"
 		} else if err != nil {
 			state = err.Error()
-		} else if s, _ := m["mcpServers"].(map[string]any); s != nil && s[mcpName] != nil {
-			state = "configurado"
+		} else if s, _ := m["mcpServers"].(map[string]any); s != nil {
+			var on []string
+			for _, n := range []string{mcpName, reportMcpName} {
+				if s[n] != nil {
+					on = append(on, n)
+				}
+			}
+			if len(on) > 0 {
+				state = "configurado (" + strings.Join(on, ", ") + ")"
+			}
 		}
 		fmt.Printf("%-24s: %s\n", t.name, state)
 	}
