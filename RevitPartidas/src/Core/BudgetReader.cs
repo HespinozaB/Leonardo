@@ -170,7 +170,7 @@ public static class BudgetReader
 		// Árbol por prefijos (si falta un título intermedio, cuelga del ancestro más cercano).
 		foreach (BudgetItem budgetItem in budget.ByCode.Values.OrderBy(i => i.Code, StringComparer.Ordinal))
 		{
-			string[] levels = PartidaCode.Levels(budgetItem.Code);
+			string[] levels = PartidaCode.Levels(budgetItem.Code, PartidaCode.MaxLevels);
 			for (int i = budgetItem.Depth - 2; i >= 0 && budgetItem.Parent == null; i--)
 			{
 				budgetItem.Parent = budget.Find(levels[i]);

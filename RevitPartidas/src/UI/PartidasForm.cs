@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Windows.Forms;
 using RevitPartidas.Commands;
 using RevitPartidas.Core;
@@ -13,108 +11,91 @@ using ExternalEvent = Autodesk.Revit.UI.ExternalEvent;
 namespace RevitPartidas.UI;
 
 /// <summary>
-/// Ventana no modal. A la izquierda, el presupuesto como árbol (con cuántos elementos tiene cada partida); a la derecha, los
-/// elementos del modelo con su partida de origen, la propuesta DYCUSA_PARTIDA 1…6 y su estado.
+/// Ventana no modal en 4 pasos: 1 Jerarquía (presupuesto y número de niveles), 2 Parámetros (nombres y creación),
+/// 3 Enlaces (niveles que salen de un dato fijo o de un parámetro de Revit, p. ej. la ETAPA) y 4 Revisión.
 /// </summary>
-internal sealed class PartidasForm : Form
+internal sealed partial class PartidasForm : Form
 {
-	private static readonly string[] ColumnNames =
-	{
-		"Id", "Estado", "Categoría", "Familia : Tipo", "Nivel", "Parámetro de origen", "Código de origen", "DYCUSA actual",
-		"PARTIDA 1", "PARTIDA 2", "PARTIDA 3", "PARTIDA 4", "PARTIDA 5", "PARTIDA 6", "Nota"
-	};
+	private const int TabHierarchy = 0;
+	private const int TabParameters = 1;
+	private const int TabLinks = 2;
+	private const int TabReview = 3;
 
-	private static readonly int[] ColumnWidths = { 70, 110, 120, 220, 110, 190, 120, 120, 45, 60, 75, 95, 110, 125, 300 };
-
-	private const int FilterAll = 0;
-	private const int FilterReview = 1;
-	private const int FilterPending = 2;
-	private const int FilterWithout = 3;
-	private const int FilterOk = 4;
-	private const int FilterNode = 5;
-	private const int FilterRevit = 6;
-
-	private static readonly string[] Filters =
-	{
-		"Todos", "Por revisar (conflicto, no está, título, difiere)", "Pendientes de escribir", "Sin partida", "OK",
-		"De la partida marcada en el árbol", "Selección actual de Revit"
-	};
-
-	private static readonly Dictionary<RowStatus, string> StatusText = new Dictionary<RowStatus, string>
-	{
-		[RowStatus.Conflicto] = "Conflicto",
-		[RowStatus.NoEnPresupuesto] = "No está en ppto.",
-		[RowStatus.Titulo] = "Es título",
-		[RowStatus.Difiere] = "Difiere",
-		[RowStatus.Pendiente] = "Pendiente",
-		[RowStatus.SinPartida] = "Sin partida",
-		[RowStatus.Ok] = "OK"
-	};
-
-	private static readonly Dictionary<RowStatus, Color> StatusColor = new Dictionary<RowStatus, Color>
-	{
-		[RowStatus.Conflicto] = Color.FromArgb(255, 205, 205),
-		[RowStatus.NoEnPresupuesto] = Color.FromArgb(255, 205, 205),
-		[RowStatus.Titulo] = Color.FromArgb(255, 225, 190),
-		[RowStatus.Difiere] = Color.FromArgb(255, 225, 190),
-		[RowStatus.Pendiente] = Color.FromArgb(255, 248, 200),
-		[RowStatus.SinPartida] = Color.FromArgb(235, 235, 235),
-		[RowStatus.Ok] = Color.FromArgb(215, 240, 215)
-	};
+	private static readonly string[] LinkModeText = { "Del código de partida", "Valor fijo", "Parámetro de Revit" };
 
 	private readonly PartidasHandler _handler;
-
 	private readonly ExternalEvent _event;
+	private readonly PartidasConfig _config = PartidasConfig.Load();
 
-	// Presupuesto (izquierda).
-	private readonly Button _loadBudget = new Button();
-	private readonly Label _budgetLabel = new Label();
-	private readonly TextBox _treeSearch = new TextBox();
-	private readonly CheckBox _onlyEmpty = new CheckBox();
-	private readonly TreeView _tree = new TreeView();
-	private readonly Button _assign = new Button();
-	private readonly Button _selectNode = new Button();
-
-	// Elementos (derecha).
-	private readonly ComboBox _filter = new ComboBox();
-	private readonly TextBox _search = new TextBox();
-	private readonly Button _scan = new Button();
-	private readonly TextBox _keywords = new TextBox();
-	private readonly CheckBox _preferSource = new CheckBox();
-	private readonly ListView _list = new ListView();
-	private readonly Label _summary = new Label();
-
-	// Acciones (abajo).
-	private readonly Button _createParams = new Button();
-	private readonly Button _apply = new Button();
-	private readonly Button _clear = new Button();
-	private readonly Button _selectRows = new Button();
-	private readonly Button _useRevitSelection = new Button();
-	private readonly Button _export = new Button();
+	private readonly TabControl _tabs = new TabControl();
 	private readonly Label _status = new Label();
 
-	private readonly Dictionary<string, TreeNode> _nodes = new Dictionary<string, TreeNode>(StringComparer.Ordinal);
+	// Paso 1.
+	private readonly Button _loadBudget = new Button();
+	private readonly Label _budgetLabel = new Label();
+	private readonly NumericUpDown _levels = new NumericUpDown();
+	private readonly ListView _hierarchy = new ListView();
+
+	// Paso 2.
+	private readonly TextBox _prefix = new TextBox();
+	private readonly CheckBox _twoDigits = new CheckBox();
+	private readonly ListView _parameters = new ListView();
+	private readonly Button _createParams = new Button();
+	private bool[] _parametersExist = Array.Empty<bool>();
+
+	// Paso 3.
+	private readonly DataGridView _links = new DataGridView();
+	private readonly Button _suggest = new Button();
+	private readonly TextBox _keywords = new TextBox();
+	private readonly CheckBox _preferSource = new CheckBox();
+	private readonly Button _analyze = new Button();
+	private readonly Dictionary<int, string> _linkExamples = new Dictionary<int, string>();
 
 	private Budget _budget;
-	private List<ElementRow> _rows = new List<ElementRow>();
-	private List<ElementRow> _shown = new List<ElementRow>();
-	private HashSet<long> _revitSelection = new HashSet<long>();
-	private Dictionary<string, int> _countByCode = new Dictionary<string, int>(StringComparer.Ordinal);
 	private string _documentTitle = string.Empty;
-	private int _dycusaBound;
-	private int _sortColumn = -1;
-	private bool _sortAscending = true;
+	private string _scanSignature;
 	private bool _busy;
+	private bool _filling;
 
 	public PartidasForm(PartidasHandler handler, ExternalEvent externalEvent)
 	{
 		_handler = handler;
 		_event = externalEvent;
-		_handler.OnResult = (result, title, message) => OnUi(() => SetResult(result, title, message));
+		_handler.OnScan = (result, title, message) => OnUi(() => SetScan(result, title, message));
+		_handler.OnWritten = (written, message) => OnUi(() => SetWritten(written, message));
 		_handler.OnSelection = ids => OnUi(() => SetRevitSelection(ids));
+		_handler.OnSuggestions = suggestions => OnUi(() => SetSuggestions(suggestions));
+		_handler.OnParameterStatus = (exist, message) => OnUi(() => SetParameterStatus(exist, message));
+		_handler.OnPicked = id => OnUi(() => SetPicked(id));
+		_handler.OnMessage = message => OnUi(() => Done(message));
 		BuildLayout();
 	}
 
+	/// <summary>Carga el último presupuesto; si ya se configuraron los pasos, va directo a la revisión.</summary>
+	public void Start()
+	{
+		Safe(() =>
+		{
+			string path = Settings.Get("budget");
+			if (!string.IsNullOrEmpty(path) && File.Exists(path))
+			{
+				LoadBudget(path);
+			}
+
+			if (Settings.Get("configured") == "1" && _budget != null)
+			{
+				_tabs.SelectedIndex = TabReview;
+			}
+			else
+			{
+				RefreshHierarchy();
+			}
+		});
+	}
+
+	#region Infraestructura
+
+	/// <summary>Ejecuta en el hilo de la ventana; un error se muestra una sola vez en la barra de estado (sin ventanas de excepción).</summary>
 	private void OnUi(Action action)
 	{
 		if (IsDisposed)
@@ -124,226 +105,41 @@ internal sealed class PartidasForm : Form
 
 		if (InvokeRequired)
 		{
-			BeginInvoke(action);
+			BeginInvoke(new Action(() => Safe(action)));
 		}
 		else
 		{
+			Safe(action);
+		}
+	}
+
+	private void Safe(Action action)
+	{
+		try
+		{
 			action();
 		}
-	}
-
-	/// <summary>Carga el último presupuesto usado y analiza el modelo.</summary>
-	public void Start()
-	{
-		string path = Settings.Get("budget");
-		if (!string.IsNullOrEmpty(path) && File.Exists(path))
+		catch (Exception ex)
 		{
-			LoadBudget(path, rescan: false);
+			SetBusy(false, "Error: " + ex.Message);
 		}
-
-		RequestScan();
 	}
 
-	#region Layout
-
-	private void BuildLayout()
-	{
-		Text = "EMASY · Partidas DYCUSA";
-		StartPosition = FormStartPosition.CenterScreen;
-		Size = new Size(1400, 760);
-		MinimumSize = new Size(900, 450);
-		Font = new Font("Segoe UI", 9f);
-		ShowInTaskbar = false;
-
-		var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
-		split.Panel1.Controls.Add(BuildBudgetPanel());
-		split.Panel2.Controls.Add(BuildElementsPanel());
-
-		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 6, 8, 0), WrapContents = false };
-		Setup(_createParams, "Crear parámetros DYCUSA", (s, e) => Raise(PartidasAction.CreateParameters, "Creando parámetros…"));
-		Setup(_apply, "Escribir propuestos", (s, e) => ApplyProposed());
-		_apply.Font = new Font(Font, FontStyle.Bold);
-		Setup(_clear, "Limpiar DYCUSA", (s, e) => ClearSelected());
-		_clear.ForeColor = Color.Firebrick;
-		Setup(_selectRows, "Seleccionar en Revit", (s, e) => SelectInRevit(SelectedRows().Select(r => r.Id)));
-		Setup(_useRevitSelection, "Usar selección de Revit", (s, e) => Raise(PartidasAction.ReadSelection, "Leyendo la selección…"));
-		Setup(_export, "Exportar CSV…", (s, e) => ExportCsv());
-		_status.AutoSize = true;
-		_status.Margin = new Padding(16, 7, 0, 0);
-		bottom.Controls.AddRange(new Control[] { _createParams, _apply, _clear, _selectRows, _useRevitSelection, _export, _status });
-
-		Controls.Add(split);
-		Controls.Add(bottom);
-		Load += (s, e) => split.SplitterDistance = 430;
-		UpdateButtons();
-	}
-
-	private Control BuildBudgetPanel()
-	{
-		var panel = new Panel { Dock = DockStyle.Fill };
-		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 64, Padding = new Padding(8, 8, 4, 0) };
-		Setup(_loadBudget, "Cargar presupuesto…", (s, e) => ChooseBudget());
-		_budgetLabel.AutoSize = true;
-		_budgetLabel.Margin = new Padding(6, 7, 0, 0);
-		_budgetLabel.ForeColor = Color.DimGray;
-		_budgetLabel.Text = "(sin presupuesto)";
-		top.Controls.Add(_loadBudget);
-		top.Controls.Add(_budgetLabel);
-		top.SetFlowBreak(_budgetLabel, true);
-		top.Controls.Add(new Label { Text = "Buscar:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) });
-		_treeSearch.Width = 180;
-		_treeSearch.TextChanged += (s, e) => BuildTree();
-		top.Controls.Add(_treeSearch);
-		_onlyEmpty.Text = "Solo partidas sin elementos";
-		_onlyEmpty.AutoSize = true;
-		_onlyEmpty.Margin = new Padding(10, 5, 0, 0);
-		_onlyEmpty.CheckedChanged += (s, e) => BuildTree();
-		top.Controls.Add(_onlyEmpty);
-
-		_tree.Dock = DockStyle.Fill;
-		_tree.HideSelection = false;
-		_tree.ShowNodeToolTips = true;
-		_tree.AfterSelect += (s, e) =>
-		{
-			UpdateButtons();
-			if (_filter.SelectedIndex == FilterNode)
-			{
-				Populate();
-			}
-		};
-		_tree.NodeMouseDoubleClick += (s, e) =>
-		{
-			_tree.SelectedNode = e.Node;
-			if (_filter.SelectedIndex != FilterNode)
-			{
-				_filter.SelectedIndex = FilterNode;
-			}
-			else
-			{
-				Populate();
-			}
-		};
-
-		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 70, Padding = new Padding(8, 4, 4, 0) };
-		Setup(_assign, "Asignar partida a los elementos seleccionados  →", (s, e) => AssignNode());
-		_assign.Font = new Font(Font, FontStyle.Bold);
-		Setup(_selectNode, "Seleccionar sus elementos en Revit", (s, e) => SelectInRevit(RowsOfNode().Select(r => r.Id)));
-		var legend = new Label
-		{
-			AutoSize = true,
-			ForeColor = Color.DimGray,
-			Margin = new Padding(0, 4, 0, 0),
-			Text = "Verde: con elementos · Rojo: partida final sin elementos · Gris: \"Sin tabla en el modelo BIM\""
-		};
-		bottom.Controls.AddRange(new Control[] { _assign, _selectNode, legend });
-		bottom.SetFlowBreak(_selectNode, true);
-
-		panel.Controls.Add(_tree);
-		panel.Controls.Add(bottom);
-		panel.Controls.Add(top);
-		return panel;
-	}
-
-	private Control BuildElementsPanel()
-	{
-		var panel = new Panel { Dock = DockStyle.Fill };
-		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 64, Padding = new Padding(4, 8, 8, 0) };
-		top.Controls.Add(new Label { Text = "Mostrar:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) });
-		_filter.DropDownStyle = ComboBoxStyle.DropDownList;
-		_filter.Width = 290;
-		_filter.Items.AddRange(Filters);
-		_filter.SelectedIndex = FilterReview;
-		_filter.SelectedIndexChanged += (s, e) => Populate();
-		top.Controls.Add(_filter);
-		top.Controls.Add(new Label { Text = "Buscar:", AutoSize = true, Margin = new Padding(12, 6, 4, 0) });
-		_search.Width = 200;
-		_search.TextChanged += (s, e) => Populate();
-		top.Controls.Add(_search);
-		Setup(_scan, "Analizar modelo", (s, e) => RequestScan());
-		_scan.Margin = new Padding(12, 1, 0, 0);
-		top.Controls.Add(_scan);
-		top.SetFlowBreak(_scan, true);
-
-		top.Controls.Add(new Label { Text = "Parámetros de origen (nombre contiene):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) });
-		_keywords.Width = 160;
-		_keywords.Text = Settings.Get("keywords") ?? ElementScanner.DefaultKeywords;
-		top.Controls.Add(_keywords);
-		_preferSource.Text = "Los parámetros de origen mandan sobre los DYCUSA ya escritos";
-		_preferSource.AutoSize = true;
-		_preferSource.Margin = new Padding(12, 5, 0, 0);
-		_preferSource.CheckedChanged += (s, e) =>
-		{
-			foreach (ElementRow row in _rows)
-			{
-				ElementScanner.Evaluate(row, _budget, _preferSource.Checked);
-			}
-
-			RefreshAll();
-		};
-		top.Controls.Add(_preferSource);
-
-		_list.Dock = DockStyle.Fill;
-		_list.View = View.Details;
-		_list.FullRowSelect = true;
-		_list.MultiSelect = true;
-		_list.HideSelection = false;
-		_list.GridLines = true;
-		_list.VirtualMode = true;
-		for (int i = 0; i < ColumnNames.Length; i++)
-		{
-			_list.Columns.Add(ColumnNames[i], ColumnWidths[i]);
-		}
-
-		_list.RetrieveVirtualItem += (s, e) => e.Item = BuildItem(_shown[e.ItemIndex]);
-		_list.ColumnClick += (s, e) =>
-		{
-			_sortAscending = _sortColumn != e.Column || !_sortAscending;
-			_sortColumn = e.Column;
-			Populate();
-		};
-		_list.SelectedIndexChanged += (s, e) => UpdateButtons();
-		_list.VirtualItemsSelectionRangeChanged += (s, e) => UpdateButtons();
-		_list.DoubleClick += (s, e) => SelectInRevit(SelectedRows().Select(r => r.Id));
-
-		_summary.Dock = DockStyle.Bottom;
-		_summary.Height = 22;
-		_summary.Padding = new Padding(4, 4, 0, 0);
-		_summary.ForeColor = Color.DimGray;
-
-		panel.Controls.Add(_list);
-		panel.Controls.Add(_summary);
-		panel.Controls.Add(top);
-		return panel;
-	}
-
-	private static void Setup(Button button, string text, EventHandler click)
-	{
-		button.Text = text;
-		button.AutoSize = true;
-		button.Click += click;
-	}
-
-	#endregion
-
-	#region Revit
-
-	private void RequestScan() => Raise(PartidasAction.Scan, "Analizando el modelo…");
+	private EventHandler Do(Action action) => (s, e) => Safe(action);
 
 	private void Raise(PartidasAction action, string busyText)
 	{
 		if (_busy)
 		{
+			_status.Text = "Espera a que termine la operación en curso…";
 			return;
 		}
 
 		_handler.Action = action;
 		_handler.Budget = _budget;
-		_handler.Keywords = _keywords.Text.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).ToList();
-		_handler.PreferSource = _preferSource.Checked;
+		_handler.Config = _config.Clone();
 		_handler.DocumentTitle = _documentTitle;
-		Settings.Set("keywords", _keywords.Text);
-		if (action == PartidasAction.Scan || action == PartidasAction.CreateParameters || action == PartidasAction.Write ||
-			action == PartidasAction.Clear)
+		if (busyText != null)
 		{
 			SetBusy(true, busyText);
 		}
@@ -354,184 +150,293 @@ internal sealed class PartidasForm : Form
 	private void SetBusy(bool busy, string text)
 	{
 		_busy = busy;
-		_status.Text = text ?? string.Empty;
+		if (text != null)
+		{
+			_status.Text = text;
+		}
+
 		Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
 		UpdateButtons();
-		Update();
 	}
 
-	private void SetResult(ScanResult result, string title, string message)
+	private void Done(string message) => SetBusy(false, message);
+
+	private static Button NewButton(string text, EventHandler click, bool bold = false)
 	{
-		SetBusy(false, message ?? "Listo.");
-		if (result == null)
+		var button = new Button { Text = text, AutoSize = true };
+		button.Click += click;
+		if (bold)
 		{
-			return;
+			button.Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold);
 		}
 
-		_rows = result.Rows;
-		_documentTitle = title;
-		_dycusaBound = result.DycusaBound;
-		Text = "EMASY · Partidas DYCUSA · " + title;
-		RefreshAll();
+		return button;
 	}
 
-	private void SetRevitSelection(List<long> ids)
+	private static Label NewLabel(string text, bool wrap = false) => new Label
 	{
-		_revitSelection = new HashSet<long>(ids);
-		_status.Text = $"{ids.Count} elemento(s) seleccionados en Revit.";
-		if (_filter.SelectedIndex != FilterRevit)
-		{
-			_filter.SelectedIndex = FilterRevit;
-		}
-		else
-		{
-			Populate();
-		}
+		Text = text,
+		AutoSize = true,
+		MaximumSize = wrap ? new Size(900, 0) : Size.Empty,
+		Margin = new Padding(0, 6, 6, 0)
+	};
 
-		if (_shown.Count > 0)
+	#endregion
+
+	#region Layout
+
+	private void BuildLayout()
+	{
+		Text = "EMASY · Partidas";
+		StartPosition = FormStartPosition.CenterScreen;
+		Size = new Size(1400, 800);
+		MinimumSize = new Size(950, 500);
+		Font = new Font("Segoe UI", 9f);
+		ShowInTaskbar = false;
+
+		_tabs.Dock = DockStyle.Fill;
+		_tabs.TabPages.Add(BuildHierarchyPage());
+		_tabs.TabPages.Add(BuildParametersPage());
+		_tabs.TabPages.Add(BuildLinksPage());
+		_tabs.TabPages.Add(BuildReviewPage());
+		_tabs.SelectedIndexChanged += (s, e) => Safe(OnTabChanged);
+
+		_status.Dock = DockStyle.Bottom;
+		_status.Height = 24;
+		_status.Padding = new Padding(8, 5, 0, 0);
+		_status.BackColor = SystemColors.ControlLight;
+
+		Controls.Add(_tabs);
+		Controls.Add(_status);
+		FormClosed += (s, e) =>
 		{
-			_list.SelectedIndices.Clear();
-			for (int i = 0; i < _shown.Count; i++)
+			if (_resolveForm != null && !_resolveForm.IsDisposed)
 			{
-				_list.SelectedIndices.Add(i);
+				_resolveForm.Close();
 			}
-		}
+		};
 	}
 
-	private void SelectInRevit(IEnumerable<long> ids)
+	private TabPage BuildHierarchyPage()
 	{
-		_handler.Ids = ids.ToList();
-		if (_handler.Ids.Count == 0)
+		var page = new TabPage("1 · Jerarquía");
+		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 140, Padding = new Padding(10), FlowDirection = FlowDirection.LeftToRight };
+		top.Controls.Add(NewLabel("Elige el presupuesto y cuántos niveles (órdenes) tiene su codificación. Ejemplo con 6 niveles: 03 / 03.01 / 03.01.04 / 03.01.04.02 / 03.01.04.02.01 / 03.01.04.02.01.01.", wrap: true));
+		top.SetFlowBreak(top.Controls[0], true);
+		_loadBudget.Text = "Cargar presupuesto…";
+		_loadBudget.AutoSize = true;
+		_loadBudget.Click += Do(ChooseBudget);
+		top.Controls.Add(_loadBudget);
+		_budgetLabel.AutoSize = true;
+		_budgetLabel.Margin = new Padding(6, 7, 0, 0);
+		_budgetLabel.ForeColor = Color.DimGray;
+		_budgetLabel.Text = "(sin presupuesto)";
+		top.Controls.Add(_budgetLabel);
+		top.SetFlowBreak(_budgetLabel, true);
+		top.Controls.Add(NewLabel("Número de niveles:"));
+		_levels.Minimum = 1;
+		_levels.Maximum = PartidaCode.MaxLevels;
+		_levels.Value = _config.Levels;
+		_levels.Width = 60;
+		_levels.ValueChanged += (s, e) => Safe(() =>
 		{
-			_status.Text = "No hay elementos para seleccionar.";
-			return;
-		}
+			_config.Levels = (int)_levels.Value;
+			_config.Save();
+			RefreshHierarchy();
+			RefreshParameterNames();
+			RefreshLinks();
+		});
+		top.Controls.Add(_levels);
+		top.Controls.Add(NewButton("Detectar del presupuesto", Do(() =>
+		{
+			if (_budget != null)
+			{
+				_levels.Value = Math.Min(PartidaCode.MaxLevels, Math.Max(1, _budget.All.Max(i => i.Depth)));
+			}
+		})));
+		top.Controls.Add(NewButton("Siguiente →", Do(() => _tabs.SelectedIndex = TabParameters), bold: true));
 
-		_status.Text = $"{_handler.Ids.Count} elemento(s) seleccionados en Revit.";
-		Raise(PartidasAction.Select, null);
+		_hierarchy.Dock = DockStyle.Fill;
+		_hierarchy.View = View.Details;
+		_hierarchy.FullRowSelect = true;
+		_hierarchy.GridLines = true;
+		_hierarchy.Columns.Add("Nivel", 60);
+		_hierarchy.Columns.Add("Ejemplo de código", 170);
+		_hierarchy.Columns.Add("Descripción en el presupuesto", 560);
+		_hierarchy.Columns.Add("Códigos de este nivel en el presupuesto", 230);
+
+		page.Controls.Add(_hierarchy);
+		page.Controls.Add(top);
+		return page;
 	}
 
-	private void ApplyProposed()
+	private TabPage BuildParametersPage()
 	{
-		List<ElementRow> selected = SelectedRows();
-		List<ElementRow> targets = selected.Count > 0
-			? selected.Where(r => r.ProposedCode != null).ToList()
-			: _rows.Where(r => r.Status == RowStatus.Pendiente).ToList();
-		if (targets.Count == 0)
+		var page = new TabPage("2 · Parámetros");
+		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(10) };
+		top.Controls.Add(NewLabel("Nombre de los parámetros: el prefijo más el número de nivel (p. ej. \"DYCUSA_PARTIDA \" → DYCUSA_PARTIDA 1 … 6, o \"DYCUSA_\" con dos cifras → DYCUSA_01 … 06). Son compartidos, de texto y de ejemplar, en Datos de identidad, en todas las categorías de modelo.", wrap: true));
+		top.SetFlowBreak(top.Controls[0], true);
+		top.Controls.Add(NewLabel("Prefijo:"));
+		_prefix.Width = 220;
+		_prefix.Text = _config.Prefix;
+		_prefix.TextChanged += (s, e) => Safe(() =>
 		{
-			MessageBox.Show(this, selected.Count > 0
-					? "Los elementos seleccionados no tienen una partida propuesta (asígnales una desde el árbol)."
-					: "No hay elementos pendientes de escribir.",
-				Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-			return;
-		}
-
-		if (!ConfirmParameters())
+			_config.Prefix = _prefix.Text;
+			_config.Save();
+			_parametersExist = Array.Empty<bool>();
+			RefreshParameterNames();
+			RefreshLinks();
+		});
+		top.Controls.Add(_prefix);
+		_twoDigits.Text = "Número con dos cifras (01, 02…)";
+		_twoDigits.AutoSize = true;
+		_twoDigits.Margin = new Padding(12, 5, 0, 0);
+		_twoDigits.Checked = _config.TwoDigits;
+		_twoDigits.CheckedChanged += (s, e) => Safe(() =>
 		{
-			return;
-		}
+			_config.TwoDigits = _twoDigits.Checked;
+			_config.Save();
+			_parametersExist = Array.Empty<bool>();
+			RefreshParameterNames();
+			RefreshLinks();
+		});
+		top.Controls.Add(_twoDigits);
+		top.SetFlowBreak(_twoDigits, true);
+		_createParams.Text = "Crear / actualizar parámetros en el modelo";
+		_createParams.AutoSize = true;
+		_createParams.Font = new Font(Font, FontStyle.Bold);
+		_createParams.Click += Do(() => Raise(PartidasAction.CreateParameters, "Creando parámetros…"));
+		top.Controls.Add(_createParams);
+		top.Controls.Add(NewButton("Siguiente →", Do(() => _tabs.SelectedIndex = TabLinks), bold: true));
 
-		int risky = targets.Count(r => r.Status != RowStatus.Pendiente && r.Status != RowStatus.Ok);
-		string question = selected.Count > 0
-			? $"Escribir DYCUSA_PARTIDA 1–6 en los {targets.Count} elemento(s) seleccionados con su partida propuesta?"
-			: $"Escribir DYCUSA_PARTIDA 1–6 en los {targets.Count} elemento(s) pendientes?\n\n" +
-			  "(Los que están por revisar no se tocan: selecciónalos en la tabla para escribirlos uno a uno.)";
-		if (risky > 0)
-		{
-			question += $"\n\nAtención: {risky} de ellos están por revisar (no está en el presupuesto, es título o difiere).";
-		}
+		_parameters.Dock = DockStyle.Fill;
+		_parameters.View = View.Details;
+		_parameters.FullRowSelect = true;
+		_parameters.GridLines = true;
+		_parameters.Columns.Add("Nivel", 60);
+		_parameters.Columns.Add("Parámetro", 260);
+		_parameters.Columns.Add("En el modelo", 160);
+		_parameters.Columns.Add("Ejemplo de valor", 200);
 
-		if (MessageBox.Show(this, question, Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-		{
-			return;
-		}
-
-		_handler.Assignments = targets.ToDictionary(r => r.Id, r => r.ProposedCode);
-		Raise(PartidasAction.Write, "Escribiendo partidas…");
+		page.Controls.Add(_parameters);
+		page.Controls.Add(top);
+		return page;
 	}
 
-	private void AssignNode()
+	private TabPage BuildLinksPage()
 	{
-		if (!(_tree.SelectedNode?.Tag is BudgetItem item))
+		var page = new TabPage("3 · Enlaces");
+		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 92, Padding = new Padding(10) };
+		top.Controls.Add(NewLabel("Cada nivel sale del código de partida, de un valor fijo (p. ej. nivel 1 = 03 ARQUITECTURA para todo) o de un parámetro de Revit cuyo valor es la descripción del nivel (p. ej. PR_Elemento_Etapa = \"ETAPA 1\" → 03.01). Los niveles enlazados ordenan la información y descartan los códigos que no corresponden (p. ej. un código de ETAPA 2 en un elemento de ETAPA 1).", wrap: true));
+		top.SetFlowBreak(top.Controls[0], true);
+		_suggest.Text = "Detectar enlaces automáticamente";
+		_suggest.AutoSize = true;
+		_suggest.Click += Do(() => Raise(PartidasAction.SuggestLinks, "Buscando parámetros que coincidan con el presupuesto…"));
+		top.Controls.Add(_suggest);
+
+		_links.Dock = DockStyle.Fill;
+		_links.AllowUserToAddRows = false;
+		_links.AllowUserToDeleteRows = false;
+		_links.RowHeadersVisible = false;
+		_links.SelectionMode = DataGridViewSelectionMode.CellSelect;
+		_links.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Nivel", Width = 50, ReadOnly = true });
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Parámetro destino", Width = 200, ReadOnly = true });
+		var mode = new DataGridViewComboBoxColumn { HeaderText = "Origen", Width = 180, FlatStyle = FlatStyle.Flat };
+		mode.Items.AddRange(LinkModeText);
+		_links.Columns.Add(mode);
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Código fijo / nombre del parámetro de Revit", Width = 300 });
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Comprobación", Width = 480, ReadOnly = true });
+		_links.CurrentCellDirtyStateChanged += (s, e) =>
 		{
-			MessageBox.Show(this, "Marca una partida en el árbol del presupuesto.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-			return;
-		}
+			if (_links.IsCurrentCellDirty && _links.CurrentCell is DataGridViewComboBoxCell)
+			{
+				_links.CommitEdit(DataGridViewDataErrorContexts.Commit);
+			}
+		};
+		_links.CellValueChanged += (s, e) => Safe(() => OnLinkEdited(e.RowIndex));
+		_links.DataError += (s, e) => e.ThrowException = false;
 
-		List<ElementRow> targets = SelectedRows();
-		if (targets.Count == 0)
+		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 76, Padding = new Padding(10, 6, 10, 0) };
+		bottom.Controls.Add(NewLabel("Parámetros donde ya hay códigos de partida (el nombre contiene):"));
+		_keywords.Width = 180;
+		_keywords.Text = _config.Keywords;
+		_keywords.TextChanged += (s, e) =>
 		{
-			MessageBox.Show(this, "Selecciona los elementos en la tabla de la derecha (o en Revit y pulsa \"Usar selección de Revit\").",
-				Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-			return;
-		}
-
-		if (!ConfirmParameters())
+			_config.Keywords = _keywords.Text;
+			_config.Save();
+		};
+		bottom.Controls.Add(_keywords);
+		_preferSource.Text = "Los parámetros de origen mandan sobre lo ya escrito";
+		_preferSource.AutoSize = true;
+		_preferSource.Margin = new Padding(12, 5, 0, 0);
+		_preferSource.Checked = _config.PreferSource;
+		_preferSource.CheckedChanged += (s, e) => Safe(() =>
 		{
-			return;
-		}
-
-		string question = $"Asignar la partida\n\n{item.Code}  {item.Description}\n\na {targets.Count} elemento(s)?" +
-			"\nSe escriben DYCUSA_PARTIDA 1–6 (los niveles superiores se completan solos).";
-		if (!item.IsLeaf)
+			_config.PreferSource = _preferSource.Checked;
+			_config.Save();
+			ReevaluateAll();
+		});
+		bottom.Controls.Add(_preferSource);
+		bottom.SetFlowBreak(_preferSource, true);
+		_analyze.Text = "Analizar modelo →";
+		_analyze.AutoSize = true;
+		_analyze.Font = new Font(Font, FontStyle.Bold);
+		_analyze.Click += Do(() =>
 		{
-			question += "\n\nAtención: es un título, no una partida final del presupuesto.";
-		}
+			Settings.Set("configured", "1");
+			_scanSignature = null;
+			_tabs.SelectedIndex = TabReview;
+		});
+		bottom.Controls.Add(_analyze);
 
-		int overwritten = targets.Count(r => r.DycusaCode != null && r.DycusaCode != item.Code);
-		if (overwritten > 0)
-		{
-			question += $"\n\n{overwritten} elemento(s) ya tienen otra partida DYCUSA: se reemplaza.";
-		}
-
-		if (MessageBox.Show(this, question, Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-		{
-			return;
-		}
-
-		_handler.Assignments = targets.ToDictionary(r => r.Id, r => item.Code);
-		Raise(PartidasAction.Write, "Asignando partida…");
-	}
-
-	private void ClearSelected()
-	{
-		List<ElementRow> targets = SelectedRows();
-		if (targets.Count == 0)
-		{
-			MessageBox.Show(this, "Selecciona en la tabla los elementos a limpiar.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-			return;
-		}
-
-		if (MessageBox.Show(this, $"Vaciar DYCUSA_PARTIDA 1–6 en {targets.Count} elemento(s)?\n(Se deshace con Ctrl+Z en Revit.)",
-				Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
-		{
-			return;
-		}
-
-		_handler.Ids = targets.Select(r => r.Id).ToList();
-		Raise(PartidasAction.Clear, "Limpiando…");
-	}
-
-	/// <summary>Sin los parámetros en el modelo no se puede escribir: ofrece crearlos.</summary>
-	private bool ConfirmParameters()
-	{
-		if (_dycusaBound >= SharedParams.Names.Length)
-		{
-			return true;
-		}
-
-		if (MessageBox.Show(this, "El modelo aún no tiene los parámetros DYCUSA_PARTIDA 1–6. ¿Crearlos ahora?\n\n" +
-				"Después vuelve a pulsar el botón para escribir.", Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
-		{
-			Raise(PartidasAction.CreateParameters, "Creando parámetros…");
-		}
-
-		return false;
+		page.Controls.Add(_links);
+		page.Controls.Add(bottom);
+		page.Controls.Add(top);
+		return page;
 	}
 
 	#endregion
 
-	#region Presupuesto
+	#region Pasos 1 a 3
+
+	private void OnTabChanged()
+	{
+		switch (_tabs.SelectedIndex)
+		{
+			case TabHierarchy:
+				RefreshHierarchy();
+				break;
+			case TabParameters:
+				RefreshParameterNames();
+				if (!_busy)
+				{
+					Raise(PartidasAction.ParameterStatus, null);
+				}
+
+				break;
+			case TabLinks:
+				RefreshLinks();
+				break;
+			case TabReview:
+				if (_budget == null)
+				{
+					_status.Text = "Carga el presupuesto en el paso 1 para revisar contra él.";
+				}
+
+				if (_scanSignature != Signature())
+				{
+					RequestScan();
+				}
+
+				break;
+		}
+	}
+
+	/// <summary>Lo que obliga a volver a analizar si cambia (niveles, nombres, enlaces, palabras clave, presupuesto).</summary>
+	private string Signature() =>
+		string.Join("|", _config.Levels, _config.Prefix, _config.TwoDigits, _config.Keywords, _budget?.SourcePath,
+			string.Join(";", Enumerable.Range(0, _config.Levels).Select(i => $"{_config.Link(i).Mode}:{_config.Link(i).FixedCode}:{_config.Link(i).ParameterName}")));
 
 	private void ChooseBudget()
 	{
@@ -543,11 +448,15 @@ internal sealed class PartidasForm : Form
 		};
 		if (dialog.ShowDialog(this) == DialogResult.OK)
 		{
-			LoadBudget(dialog.FileName, rescan: true);
+			LoadBudget(dialog.FileName);
+			if (_budget != null)
+			{
+				_levels.Value = Math.Min(PartidaCode.MaxLevels, Math.Max(1, _budget.All.Max(i => i.Depth)));
+			}
 		}
 	}
 
-	private void LoadBudget(string path, bool rescan)
+	private void LoadBudget(string path)
 	{
 		try
 		{
@@ -560,446 +469,179 @@ internal sealed class PartidasForm : Form
 		}
 
 		Settings.Set("budget", path);
-		int leaves = _budget.All.Count(i => i.IsLeaf);
-		_budgetLabel.Text = $"{Path.GetFileName(path)} · {leaves} partidas";
-		foreach (ElementRow row in _rows)
+		_budgetLabel.Text = $"{Path.GetFileName(path)} · {_budget.All.Count(i => i.IsLeaf)} partidas · hasta {_budget.All.Max(i => i.Depth)} niveles";
+		RefreshHierarchy();
+		BuildBudgetTree();
+	}
+
+	private void RefreshHierarchy()
+	{
+		_hierarchy.BeginUpdate();
+		_hierarchy.Items.Clear();
+		BudgetItem example = _budget?.All.Where(i => i.IsLeaf).OrderByDescending(i => i.Depth).ThenBy(i => i.Code, StringComparer.Ordinal).FirstOrDefault();
+		string[] levels = PartidaCode.Levels(example?.Code, _config.Levels);
+		for (int i = 0; i < _config.Levels; i++)
 		{
-			ElementScanner.Evaluate(row, _budget, _preferSource.Checked);
+			BudgetItem item = _budget?.Find(levels[i]);
+			int count = _budget?.All.Count(b => b.Depth == i + 1) ?? 0;
+			_hierarchy.Items.Add(new ListViewItem(new[]
+			{
+				(i + 1).ToString(), levels[i].Length > 0 ? levels[i] : "—", item?.Description ?? string.Empty,
+				_budget == null ? string.Empty : count.ToString()
+			}));
 		}
 
-		BuildTree();
-		RefreshAll();
-		if (rescan)
+		_hierarchy.EndUpdate();
+		if (_budget != null && example != null && example.Depth > _config.Levels)
 		{
-			// Con el presupuesto se resuelven mejor los conflictos entre parámetros de origen.
-			RequestScan();
+			_status.Text = $"Atención: el presupuesto tiene códigos de {example.Depth} niveles y elegiste {_config.Levels}; los niveles más profundos no se guardarán.";
 		}
 	}
 
-	private void BuildTree()
+	private void RefreshParameterNames()
 	{
-		_tree.BeginUpdate();
-		_tree.Nodes.Clear();
-		_nodes.Clear();
-		if (_budget != null)
+		_parameters.BeginUpdate();
+		_parameters.Items.Clear();
+		string[] names = _config.Names;
+		BudgetItem example = _budget?.All.Where(i => i.IsLeaf).OrderByDescending(i => i.Depth).FirstOrDefault();
+		string[] levels = PartidaCode.Levels(example?.Code, _config.Levels);
+		for (int i = 0; i < names.Length; i++)
 		{
-			string search = BudgetReader.Simplify(_treeSearch.Text);
-			foreach (BudgetItem root in _budget.Roots)
+			string exists = i < _parametersExist.Length ? (_parametersExist[i] ? "Sí" : "No (falta crearlo)") : "…";
+			var item = new ListViewItem(new[] { (i + 1).ToString(), names[i], exists, levels[i] });
+			if (i < _parametersExist.Length)
 			{
-				TreeNode node = BuildNode(root, search);
-				if (node != null)
+				item.ForeColor = _parametersExist[i] ? Color.ForestGreen : Color.Firebrick;
+			}
+
+			_parameters.Items.Add(item);
+		}
+
+		_parameters.EndUpdate();
+	}
+
+	private void SetParameterStatus(bool[] exist, string message)
+	{
+		Done(message);
+		bool wereMissing = _parametersExist.Length == 0 || _parametersExist.Any(e => !e);
+		_parametersExist = exist;
+		RefreshParameterNames();
+		if (message != null && wereMissing && exist.All(e => e))
+		{
+			// Recién creados: los elementos ya tienen los parámetros (vacíos); no hace falta volver a analizar.
+			foreach (ElementRow row in _rows.Where(r => !r.HasDycusaParameters))
+			{
+				row.HasDycusaParameters = true;
+				row.Current = row.Current.Select(v => v ?? string.Empty).ToArray();
+			}
+
+			ReevaluateAll();
+		}
+	}
+
+	private void RefreshLinks()
+	{
+		_filling = true;
+		_links.Rows.Clear();
+		string[] names = _config.Names;
+		for (int i = 0; i < _config.Levels; i++)
+		{
+			LevelLink link = _config.Link(i);
+			string value = link.Mode == LinkMode.Fijo ? link.FixedCode : link.Mode == LinkMode.Parametro ? link.ParameterName : string.Empty;
+			_links.Rows.Add((i + 1).ToString(), names[i], LinkModeText[(int)link.Mode], value, LinkCheck(i, link));
+		}
+
+		_filling = false;
+	}
+
+	private string LinkCheck(int index, LevelLink link)
+	{
+		switch (link.Mode)
+		{
+			case LinkMode.Fijo:
+			{
+				string code = PartidaCode.Normalize(link.FixedCode);
+				BudgetItem item = _budget?.Find(code);
+				return code == null ? "Escribe un código (p. ej. 03)."
+					: PartidaCode.Depth(code) != index + 1 ? $"El código {code} no es del nivel {index + 1}."
+					: item != null ? $"✓ {code} {item.Description} (para todos los elementos)"
+					: _budget == null ? code : $"El código {code} no está en el presupuesto.";
+			}
+			case LinkMode.Parametro:
+				if (string.IsNullOrWhiteSpace(link.ParameterName))
 				{
-					_tree.Nodes.Add(node);
+					return "Escribe el nombre del parámetro de Revit (o pulsa Detectar).";
 				}
-			}
 
-			if (search.Length > 0 || _onlyEmpty.Checked)
-			{
-				_tree.ExpandAll();
-			}
-			else
-			{
-				foreach (TreeNode node in _tree.Nodes)
-				{
-					node.Expand();
-					foreach (TreeNode child in node.Nodes)
-					{
-						child.Expand();
-					}
-				}
-			}
+				return _linkExamples.TryGetValue(index + 1, out string example) ? "✓ " + example : "Se comprobará al analizar.";
+			default:
+				return "Se toma del código de partida de cada elemento.";
 		}
-
-		_tree.EndUpdate();
-		UpdateTreeCounts();
 	}
 
-	/// <summary>Nodo de la partida si ella o algún descendiente cumple el filtro (null si no).</summary>
-	private TreeNode BuildNode(BudgetItem item, string search)
+	private void OnLinkEdited(int rowIndex)
 	{
-		var children = item.Children.Select(c => BuildNode(c, search)).Where(n => n != null).ToList();
-		bool matches = (search.Length == 0 || item.Code.StartsWith(search, StringComparison.Ordinal) ||
-				BudgetReader.Simplify(item.Description).Contains(search)) &&
-			(!_onlyEmpty.Checked || (item.IsLeaf && Count(item.Code) == 0));
-		if (!matches && children.Count == 0)
-		{
-			return null;
-		}
-
-		var node = new TreeNode { Tag = item, ToolTipText = Tooltip(item) };
-		node.Nodes.AddRange(children.ToArray());
-		_nodes[item.Code] = node;
-		return node;
-	}
-
-	private static string Tooltip(BudgetItem item)
-	{
-		var text = new StringBuilder(item.Code + "  " + item.Description);
-		if (item.IsLeaf)
-		{
-			text.Append($"\nUnidad: {item.Unit}");
-			if (item.Metrado.HasValue)
-			{
-				text.Append($" · Metrado ppto.: {item.Metrado.Value.ToString("0.##", CultureInfo.CurrentCulture)}");
-			}
-		}
-
-		if (!string.IsNullOrEmpty(item.Observation))
-		{
-			text.Append("\n" + item.Observation);
-		}
-
-		return text.ToString();
-	}
-
-	private int Count(string code) => _countByCode.TryGetValue(code, out int count) ? count : 0;
-
-	private void UpdateTreeCounts()
-	{
-		_tree.BeginUpdate();
-		foreach (TreeNode node in _nodes.Values)
-		{
-			var item = (BudgetItem)node.Tag;
-			int count = Count(item.Code);
-			node.Text = $"{item.Code}  {item.Description}" + (count > 0 ? $"   [{count}]" : item.IsLeaf ? "   [0]" : string.Empty);
-			node.ForeColor = !item.IsLeaf ? (count > 0 ? Color.Black : Color.Gray)
-				: count > 0 ? Color.ForestGreen
-				: item.WithoutBimTable ? Color.Gray
-				: Color.Firebrick;
-			node.NodeFont = item.IsLeaf ? null : new Font(_tree.Font, FontStyle.Bold);
-		}
-
-		_tree.EndUpdate();
-	}
-
-	#endregion
-
-	#region Tabla
-
-	private void RefreshAll()
-	{
-		_countByCode = new Dictionary<string, int>(StringComparer.Ordinal);
-		foreach (ElementRow row in _rows)
-		{
-			if (row.ProposedCode == null)
-			{
-				continue;
-			}
-
-			foreach (string level in row.Proposed.Where(l => l.Length > 0))
-			{
-				_countByCode[level] = Count(level) + 1;
-			}
-		}
-
-		if (_onlyEmpty.Checked)
-		{
-			BuildTree();
-		}
-		else
-		{
-			UpdateTreeCounts();
-		}
-
-		Populate();
-	}
-
-	private void Populate()
-	{
-		string search = BudgetReader.Simplify(_search.Text);
-		string nodeCode = (_tree.SelectedNode?.Tag as BudgetItem)?.Code;
-		int filter = _filter.SelectedIndex;
-		IEnumerable<ElementRow> rows = _rows.Where(r =>
-		{
-			switch (filter)
-			{
-				case FilterReview:
-					return r.Status <= RowStatus.Difiere;
-				case FilterPending:
-					return r.Status == RowStatus.Pendiente;
-				case FilterWithout:
-					return r.Status == RowStatus.SinPartida && r.InCodedCategory;
-				case FilterOk:
-					return r.Status == RowStatus.Ok;
-				case FilterNode:
-					return nodeCode != null && r.ProposedCode != null && PartidaCode.IsAncestorOrSelf(nodeCode, r.ProposedCode);
-				case FilterRevit:
-					return _revitSelection.Contains(r.Id);
-				default:
-					return r.InCodedCategory || r.Status != RowStatus.SinPartida;
-			}
-		});
-		if (search.Length > 0)
-		{
-			rows = rows.Where(r => Cells(r).Any(c => BudgetReader.Simplify(c).Contains(search)));
-		}
-
-		if (_sortColumn >= 0)
-		{
-			Func<ElementRow, string> key = r => Cells(r)[_sortColumn];
-			rows = _sortColumn == 0
-				? (_sortAscending ? rows.OrderBy(r => r.Id) : rows.OrderByDescending(r => r.Id))
-				: _sortAscending ? rows.OrderBy(key, StringComparer.CurrentCultureIgnoreCase) : rows.OrderByDescending(key, StringComparer.CurrentCultureIgnoreCase);
-		}
-		else
-		{
-			rows = rows.OrderBy(r => r.Status).ThenBy(r => r.ProposedCode ?? r.SourceCode ?? "~", StringComparer.Ordinal).ThenBy(r => r.Id);
-		}
-
-		_shown = rows.ToList();
-		_list.SelectedIndices.Clear();
-		_list.VirtualListSize = _shown.Count;
-		_list.Invalidate();
-
-		IEnumerable<ElementRow> visible = _rows.Where(r => r.InCodedCategory || r.Status != RowStatus.SinPartida);
-		string counts = string.Join(" · ", visible.GroupBy(r => r.Status).OrderBy(g => g.Key).Select(g => $"{StatusText[g.Key]}: {g.Count()}"));
-		_summary.Text = $"Mostrando {_shown.Count}  ·  {counts}" +
-			(_dycusaBound < SharedParams.Names.Length ? "  ·  Faltan los parámetros DYCUSA en el modelo" : string.Empty);
-		UpdateButtons();
-	}
-
-	private static string[] Cells(ElementRow row)
-	{
-		var cells = new List<string>
-		{
-			row.Id.ToString(CultureInfo.InvariantCulture),
-			StatusText[row.Status],
-			row.Category,
-			row.FamilyType,
-			row.Level,
-			row.SourceParam ?? string.Empty,
-			row.SourceCode ?? string.Empty,
-			row.DycusaCode ?? (row.HasDycusaParameters ? string.Empty : "(sin parámetro)")
-		};
-		cells.AddRange(row.Proposed);
-		string note = row.Note ?? string.Empty;
-		if (row.Status == RowStatus.Difiere)
-		{
-			note = $"El origen dice {row.SourceCode}; DYCUSA dice {row.DycusaCode}. " + note;
-		}
-		else if (row.DycusaInconsistent)
-		{
-			note = "Los DYCUSA escritos no son de la misma rama: se reescriben desde el más profundo. " + note;
-		}
-
-		cells.Add(note.Trim());
-		return cells.ToArray();
-	}
-
-	private static ListViewItem BuildItem(ElementRow row)
-	{
-		string[] cells = Cells(row);
-		var item = new ListViewItem(cells) { BackColor = StatusColor[row.Status], UseItemStyleForSubItems = true };
-		return item;
-	}
-
-	private List<ElementRow> SelectedRows()
-	{
-		var rows = new List<ElementRow>();
-		foreach (int index in _list.SelectedIndices)
-		{
-			if (index >= 0 && index < _shown.Count)
-			{
-				rows.Add(_shown[index]);
-			}
-		}
-
-		return rows;
-	}
-
-	private IEnumerable<ElementRow> RowsOfNode()
-	{
-		string code = (_tree.SelectedNode?.Tag as BudgetItem)?.Code;
-		return code == null
-			? Enumerable.Empty<ElementRow>()
-			: _rows.Where(r => r.ProposedCode != null && PartidaCode.IsAncestorOrSelf(code, r.ProposedCode));
-	}
-
-	private void UpdateButtons()
-	{
-		int selected = _list.SelectedIndices.Count;
-		bool idle = !_busy;
-		_scan.Enabled = idle;
-		_loadBudget.Enabled = idle;
-		_createParams.Enabled = idle;
-		_createParams.Text = _dycusaBound >= SharedParams.Names.Length ? "Actualizar parámetros DYCUSA" : "Crear parámetros DYCUSA";
-		_apply.Enabled = idle;
-		int pending = _rows.Count(r => r.Status == RowStatus.Pendiente);
-		_apply.Text = selected > 0 ? $"Escribir propuestos ({selected} selec.)" : $"Escribir pendientes ({pending})";
-		_clear.Enabled = idle && selected > 0;
-		_selectRows.Enabled = idle && selected > 0;
-		_useRevitSelection.Enabled = idle;
-		_assign.Enabled = idle && selected > 0 && _tree.SelectedNode != null;
-		_assign.Text = selected > 0 ? $"Asignar partida a {selected} elemento(s)  →" : "Asignar partida a los elementos seleccionados  →";
-		_selectNode.Enabled = idle && _tree.SelectedNode != null;
-	}
-
-	#endregion
-
-	#region CSV
-
-	private void ExportCsv()
-	{
-		using var dialog = new SaveFileDialog
-		{
-			Title = "Exportar cobertura y elementos",
-			Filter = "CSV (*.csv)|*.csv",
-			FileName = $"Partidas DYCUSA - {_documentTitle}.csv"
-		};
-		if (dialog.ShowDialog(this) != DialogResult.OK)
+		if (_filling || rowIndex < 0 || rowIndex >= _config.Levels)
 		{
 			return;
 		}
 
-		string basePath = Path.Combine(Path.GetDirectoryName(dialog.FileName) ?? string.Empty, Path.GetFileNameWithoutExtension(dialog.FileName));
-		string coveragePath = basePath + " - cobertura.csv";
-		string elementsPath = basePath + " - elementos.csv";
-		try
+		DataGridViewRow row = _links.Rows[rowIndex];
+		LevelLink link = _config.Link(rowIndex);
+		link.Mode = (LinkMode)Math.Max(0, Array.IndexOf(LinkModeText, row.Cells[2].Value as string));
+		string value = (row.Cells[3].Value as string ?? string.Empty).Trim();
+		if (link.Mode == LinkMode.Fijo)
 		{
-			if (_budget != null)
+			link.FixedCode = value;
+		}
+		else if (link.Mode == LinkMode.Parametro)
+		{
+			link.ParameterName = value;
+		}
+
+		_config.Save();
+		_filling = true;
+		row.Cells[4].Value = LinkCheck(rowIndex, link);
+		_filling = false;
+	}
+
+	private void SetSuggestions(List<LinkSuggestion> suggestions)
+	{
+		Done(suggestions.Count == 0 ? "No se encontraron parámetros cuyo valor coincida con las descripciones del presupuesto." : null);
+		if (suggestions.Count == 0)
+		{
+			return;
+		}
+
+		string text = string.Join("\n", suggestions.Select(s => s.Mode == LinkMode.Fijo
+			? $"Nivel {s.Level}: valor fijo {s.FixedCode} ({s.Example}) para todos los elementos"
+			: $"Nivel {s.Level}: parámetro \"{s.ParameterName}\" ({s.Matches} elementos; p. ej. {s.Example})"));
+		if (MessageBox.Show(this, "Se encontraron estos enlaces:\n\n" + text + "\n\n¿Aplicarlos?", Text, MessageBoxButtons.YesNo,
+				MessageBoxIcon.Question) != DialogResult.Yes)
+		{
+			_status.Text = "Enlaces sugeridos sin aplicar.";
+			return;
+		}
+
+		foreach (LinkSuggestion suggestion in suggestions.Where(s => s.Level <= _config.Levels))
+		{
+			LevelLink link = _config.Link(suggestion.Level - 1);
+			link.Mode = suggestion.Mode;
+			if (suggestion.Mode == LinkMode.Fijo)
 			{
-				WriteCsv(coveragePath, CoverageLines());
+				link.FixedCode = suggestion.FixedCode;
 			}
-
-			WriteCsv(elementsPath, ElementLines());
-			_status.Text = _budget != null
-				? $"Exportado: {Path.GetFileName(coveragePath)} y {Path.GetFileName(elementsPath)}"
-				: $"Exportado: {Path.GetFileName(elementsPath)} (carga el presupuesto para exportar también la cobertura)";
-		}
-		catch (Exception ex)
-		{
-			MessageBox.Show(this, "No se pudo exportar:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-		}
-	}
-
-	/// <summary>Por partida: metrado del presupuesto frente a la cantidad BIM de sus elementos (según su unidad).</summary>
-	private IEnumerable<string[]> CoverageLines()
-	{
-		yield return new[] { "Código", "Descripción", "Nivel", "Und.", "Metrado ppto.", "Elementos BIM", "Cantidad BIM", "Diferencia", "Estado", "Observación ppto." };
-		ILookup<string, ElementRow> byCode = _rows.Where(r => r.ProposedCode != null).ToLookup(r => r.ProposedCode, StringComparer.Ordinal);
-		foreach (BudgetItem item in _budget.All.OrderBy(i => i.Code, StringComparer.Ordinal))
-		{
-			int count = Count(item.Code);
-			string quantity = string.Empty;
-			string difference = string.Empty;
-			string state = string.Empty;
-			if (item.IsLeaf)
+			else
 			{
-				double? bim = Quantity(item.Unit, byCode[item.Code].ToList());
-				quantity = bim.HasValue ? Number(bim.Value) : string.Empty;
-				if (bim.HasValue && item.Metrado.HasValue)
-				{
-					difference = Number(bim.Value - item.Metrado.Value);
-				}
-
-				state = count > 0 ? "Con elementos" : item.WithoutBimTable ? "Sin tabla en el modelo BIM" : "Sin elementos";
+				link.ParameterName = suggestion.ParameterName;
+				_linkExamples[suggestion.Level] = $"{suggestion.Matches} elementos con valor que coincide; p. ej. {suggestion.Example}";
 			}
-
-			yield return new[]
-			{
-				item.Code, item.Description, item.Depth.ToString(CultureInfo.InvariantCulture), item.Unit,
-				item.Metrado.HasValue ? Number(item.Metrado.Value) : string.Empty, count.ToString(CultureInfo.InvariantCulture),
-				quantity, difference, state, item.Observation ?? string.Empty
-			};
 		}
-	}
 
-	private IEnumerable<string[]> ElementLines()
-	{
-		var header = new List<string>(ColumnNames) { "Área (m²)", "Longitud (m)", "Volumen (m³)" };
-		yield return header.ToArray();
-		foreach (ElementRow row in _rows.Where(r => r.InCodedCategory || r.Status != RowStatus.SinPartida)
-					 .OrderBy(r => r.Status).ThenBy(r => r.ProposedCode ?? "~", StringComparer.Ordinal))
-		{
-			var cells = new List<string>(Cells(row)) { Number(row.Area), Number(row.Length), Number(row.Volume) };
-			yield return cells.ToArray();
-		}
-	}
-
-	/// <summary>Suma la magnitud que corresponde a la unidad (m² → área, m → longitud, m³ → volumen, und → cantidad).</summary>
-	private static double? Quantity(string unit, List<ElementRow> rows)
-	{
-		string u = BudgetReader.Simplify(unit).Replace("²", "2").Replace("³", "3").Replace(".", string.Empty);
-		switch (u)
-		{
-			case "m2":
-				return rows.Sum(r => r.Area);
-			case "m3":
-				return rows.Sum(r => r.Volume);
-			case "m":
-			case "ml":
-				return rows.Sum(r => r.Length);
-			case "und":
-			case "u":
-			case "un":
-			case "pza":
-			case "jgo":
-			case "glb":
-				return rows.Count;
-			default:
-				return null;
-		}
-	}
-
-	private static string Number(double value) => value.ToString("0.##", CultureInfo.CurrentCulture);
-
-	private static void WriteCsv(string path, IEnumerable<string[]> lines)
-	{
-		// Separador ";" y UTF-8 con BOM: abre bien en Excel en español.
-		using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
-		foreach (string[] line in lines)
-		{
-			writer.WriteLine(string.Join(";", line.Select(Escape)));
-		}
-	}
-
-	private static string Escape(string value)
-	{
-		value ??= string.Empty;
-		return value.IndexOfAny(new[] { ';', '"', '\n', '\r' }) >= 0 ? "\"" + value.Replace("\"", "\"\"") + "\"" : value;
+		_config.Save();
+		RefreshLinks();
+		_status.Text = "Enlaces aplicados. Pulsa \"Analizar modelo →\".";
 	}
 
 	#endregion
-}
-
-/// <summary>Preferencias del usuario (último presupuesto y palabras clave) en %AppData%\EMASY\Partidas.ini.</summary>
-internal static class Settings
-{
-	private static string FilePath => Path.Combine(
-		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EMASY", "Partidas.ini");
-
-	public static string Get(string key)
-	{
-		try
-		{
-			if (!File.Exists(FilePath))
-			{
-				return null;
-			}
-
-			string prefix = key + "=";
-			return File.ReadAllLines(FilePath, Encoding.UTF8).FirstOrDefault(l => l.StartsWith(prefix, StringComparison.Ordinal))?.Substring(prefix.Length);
-		}
-		catch (Exception)
-		{
-			return null;
-		}
-	}
-
-	public static void Set(string key, string value)
-	{
-		try
-		{
-			Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-			var lines = File.Exists(FilePath)
-				? File.ReadAllLines(FilePath, Encoding.UTF8).Where(l => !l.StartsWith(key + "=", StringComparison.Ordinal)).ToList()
-				: new List<string>();
-			lines.Add(key + "=" + (value ?? string.Empty).Replace("\r", " ").Replace("\n", " "));
-			File.WriteAllLines(FilePath, lines, Encoding.UTF8);
-		}
-		catch (Exception)
-		{
-			// Las preferencias son una comodidad: si no se pueden guardar, se sigue sin ellas.
-		}
-	}
 }

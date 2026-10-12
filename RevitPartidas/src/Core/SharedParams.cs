@@ -2,24 +2,23 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.DB;
 
 namespace RevitPartidas.Core;
 
 /// <summary>
-/// Los 6 parámetros DYCUSA_PARTIDA (texto, de ejemplar, en Datos de identidad). Son compartidos con GUID fijos, así que son
-/// los mismos en todos los modelos y se pueden usar en tablas y etiquetas.
+/// Los parámetros de nivel (por defecto DYCUSA_PARTIDA 1…6): texto, de ejemplar, en Datos de identidad. Son compartidos y su
+/// GUID depende solo del nombre, así que el mismo nombre es el mismo parámetro en todos los modelos.
 /// </summary>
 public static class SharedParams
 {
-	public const string Prefix = "DYCUSA_PARTIDA ";
-
 	public const string GroupName = "DYCUSA";
 
-	public static readonly string[] Names = Enumerable.Range(1, PartidaCode.MaxLevels).Select(i => Prefix + i).ToArray();
-
-	private static readonly Guid[] Guids =
+	/// <summary>GUID de la primera versión (DYCUSA_PARTIDA 1…6): se conservan para no duplicar los ya creados.</summary>
+	private static readonly Guid[] LegacyGuids =
 	{
 		new Guid("98e99e07-cb5f-471a-90ae-15524696d506"),
 		new Guid("2333121c-f470-4841-a0bc-e7092b9d5dd2"),
@@ -33,17 +32,28 @@ public static class SharedParams
 	public static string SharedFilePath => Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EMASY", "DYCUSA_Parametros.txt");
 
-	/// <summary>Cuántos de los 6 parámetros están ya vinculados en el modelo.</summary>
-	public static int CountBound(Document doc) => FindBound(doc).Count(d => d != null);
-
-	/// <summary>Las definiciones vinculadas de DYCUSA_PARTIDA 1…6 (null si alguna no existe).</summary>
-	public static Definition[] FindBound(Document doc)
+	public static Guid GuidFor(string name)
 	{
-		var found = new Definition[Names.Length];
+		for (int i = 0; i < LegacyGuids.Length; i++)
+		{
+			if (name == PartidasConfig.DefaultPrefix + (i + 1))
+			{
+				return LegacyGuids[i];
+			}
+		}
+
+		using MD5 md5 = MD5.Create();
+		return new Guid(md5.ComputeHash(Encoding.UTF8.GetBytes("EMASY-PARTIDAS:" + name)));
+	}
+
+	/// <summary>Las definiciones vinculadas con esos nombres (null en las que no existen).</summary>
+	public static Definition[] FindBound(Document doc, IList<string> names)
+	{
+		var found = new Definition[names.Count];
 		DefinitionBindingMapIterator iterator = doc.ParameterBindings.ForwardIterator();
 		while (iterator.MoveNext())
 		{
-			int index = Array.IndexOf(Names, iterator.Key?.Name);
+			int index = names.IndexOf(iterator.Key?.Name);
 			if (index >= 0)
 			{
 				found[index] = iterator.Key;
@@ -53,14 +63,14 @@ public static class SharedParams
 		return found;
 	}
 
-	/// <summary>
-	/// Crea (o amplía a todas las categorías de modelo) los 6 parámetros. Debe llamarse dentro de una transacción.
-	/// </summary>
-	public static string Ensure(Document doc)
+	public static int CountBound(Document doc, IList<string> names) => FindBound(doc, names).Count(d => d != null);
+
+	/// <summary>Crea (o amplía a todas las categorías de modelo) los parámetros. Debe llamarse dentro de una transacción.</summary>
+	public static string Ensure(Document doc, IList<string> names)
 	{
 		Application app = doc.Application;
 		CategorySet categories = ModelCategories(doc);
-		Definition[] bound = FindBound(doc);
+		Definition[] bound = FindBound(doc, names);
 
 		string previousFile = app.SharedParametersFilename;
 		int created = 0;
@@ -69,7 +79,7 @@ public static class SharedParams
 		{
 			DefinitionFile file = OpenSharedFile(app);
 			DefinitionGroup group = file.Groups.get_Item(GroupName) ?? file.Groups.Create(GroupName);
-			for (int i = 0; i < Names.Length; i++)
+			for (int i = 0; i < names.Count; i++)
 			{
 				var binding = new InstanceBinding(categories);
 				if (bound[i] != null)
@@ -91,12 +101,12 @@ public static class SharedParams
 					continue;
 				}
 
-				Definition definition = group.Definitions.get_Item(Names[i]);
+				Definition definition = group.Definitions.get_Item(names[i]);
 				if (definition == null)
 				{
-					var options = new ExternalDefinitionCreationOptions(Names[i], SpecTypeId.String.Text)
+					var options = new ExternalDefinitionCreationOptions(names[i], SpecTypeId.String.Text)
 					{
-						GUID = Guids[i],
+						GUID = GuidFor(names[i]),
 						Description = $"Código de la partida del presupuesto, nivel {i + 1}.",
 						UserModifiable = true,
 						Visible = true
@@ -112,7 +122,7 @@ public static class SharedParams
 		}
 		finally
 		{
-			AllowVaryBetweenGroups(doc);
+			AllowVaryBetweenGroups(doc, names);
 
 			// No se cambia el archivo de parámetros compartidos que el usuario tenía configurado.
 			try
@@ -124,17 +134,17 @@ public static class SharedParams
 			}
 		}
 
-		return $"Parámetros DYCUSA: {created} creado(s), {extended} actualizado(s) en {categories.Size} categorías.";
+		return $"Parámetros: {created} creado(s), {extended} actualizado(s) en {categories.Size} categorías.";
 	}
 
 	/// <summary>Permite que cada copia de un grupo tenga su propia partida (si no, Revit no deja escribir en elementos agrupados).</summary>
-	private static void AllowVaryBetweenGroups(Document doc)
+	private static void AllowVaryBetweenGroups(Document doc, IList<string> names)
 	{
-		foreach (Guid guid in Guids)
+		foreach (string name in names)
 		{
 			try
 			{
-				InternalDefinition definition = SharedParameterElement.Lookup(doc, guid)?.GetDefinition();
+				InternalDefinition definition = SharedParameterElement.Lookup(doc, GuidFor(name))?.GetDefinition();
 				if (definition != null && !definition.VariesAcrossGroups)
 				{
 					definition.SetAllowVaryBetweenGroups(doc, true);
@@ -176,17 +186,15 @@ public static class SharedParams
 		return set;
 	}
 
-	/// <summary>Los parámetros DYCUSA del elemento (null en los niveles que no tiene).</summary>
-	public static Parameter[] Get(Element element)
+	/// <summary>Los parámetros de nivel del elemento (null en los niveles que no tiene).</summary>
+	public static Parameter[] Get(Element element, IList<string> names, IList<Guid> guids)
 	{
-		var parameters = new Parameter[Names.Length];
-		for (int i = 0; i < Names.Length; i++)
+		var parameters = new Parameter[names.Count];
+		for (int i = 0; i < names.Count; i++)
 		{
-			parameters[i] = element.get_Parameter(Guids[i]) ?? element.LookupParameter(Names[i]);
+			parameters[i] = element.get_Parameter(guids[i]) ?? element.LookupParameter(names[i]);
 		}
 
 		return parameters;
 	}
-
-	public static IReadOnlyList<Guid> AllGuids => Guids;
 }

@@ -1,77 +1,98 @@
-# EMASY · Partidas DYCUSA (Revit 2024)
+# EMASY · Partidas (Revit 2024)
 
-Addin hermano de *EMASY DWG Tools* y *EMASY Parámetros*. Se encuentra en la pestaña **EMASY**, panel **Partidas**, botón **Partidas DYCUSA**.
+Addin hermano de *EMASY DWG Tools* y *EMASY Parámetros*. Está en la pestaña **EMASY**, panel **Partidas**, botón **Partidas DYCUSA**.
 
-Compara los códigos de partida que ya tiene el modelo con el presupuesto en Excel y los unifica en 6 parámetros nuevos, uno por nivel del código:
+Compara los códigos de partida que ya tiene el modelo con el presupuesto (Excel) y los unifica en un parámetro por nivel de la codificación. Por defecto son **DYCUSA_PARTIDA 1 … 6**:
 
-| Parámetro | Ejemplo (`03.01.04.02.01.01`) | Ejemplo (`03.01.01.01.01`) |
+| Parámetro | `03.01.04.02.01.01` | `03.01.01.01.01` |
 |---|---|---|
-| DYCUSA_PARTIDA 1 | `03` | `03` |
-| DYCUSA_PARTIDA 2 | `03.01` | `03.01` |
+| DYCUSA_PARTIDA 1 | `03` (ARQUITECTURA) | `03` |
+| DYCUSA_PARTIDA 2 | `03.01` (ETAPA 1) | `03.01` |
 | DYCUSA_PARTIDA 3 | `03.01.04` | `03.01.01` |
 | DYCUSA_PARTIDA 4 | `03.01.04.02` | `03.01.01.01` |
 | DYCUSA_PARTIDA 5 | `03.01.04.02.01` | `03.01.01.01.01` |
-| DYCUSA_PARTIDA 6 | `03.01.04.02.01.01` | *(vacío: no aplica)* |
+| DYCUSA_PARTIDA 6 | `03.01.04.02.01.01` | *(vacío)* |
 
-Solo se guarda el código; las descripciones quedan para una fase posterior. Basta con el código más profundo para completar los niveles superiores. Por eso, si un elemento solo tiene la PARTIDA 6 (o la 5), el addin propone completar el resto.
+Solo se guardan códigos. Las descripciones quedan para una fase posterior.
 
-## Flujo de trabajo
+## Los 4 pasos (pestañas de la ventana)
 
-1. **Cargar presupuesto…**: elige el Excel del presupuesto (por ejemplo `PPTO_ARQUITECTURA_Comparativo_BIM.xlsx`). El addin busca en cualquier hoja la fila con *Item / Descripción / Und.*. Una fila con unidad es una partida final; una fila sin unidad es un título. También lee *Metrado* y *Tabla BIM / Observación*. La ruta queda guardada para la próxima vez.
-2. **Crear parámetros DYCUSA**: crea los 6 parámetros compartidos con estas características:
-   - de texto y de ejemplar, en *Datos de identidad*;
-   - con GUID fijos, así que son los mismos en todos los modelos;
-   - en todas las categorías de modelo;
-   - con valores que pueden variar entre grupos.
+### 1 · Jerarquía
+* **Cargar presupuesto…**: el addin busca en cualquier hoja la fila con *Item / Descripción / Und.*. Una fila con unidad es una partida final; una fila sin unidad es un título. También lee *Metrado* y *Tabla BIM / Observación*.
+* **Número de niveles** (órdenes): se detecta del presupuesto (6 en este caso) y se puede cambiar (de 1 a 8). Una tabla muestra un ejemplo de cada nivel con su descripción.
 
-   El archivo de parámetros compartidos queda en `%AppData%\EMASY\DYCUSA_Parametros.txt` (sirve para etiquetas y familias). No se cambia el archivo de parámetros compartidos que tengas configurado.
-3. **Analizar modelo**: para cada elemento, busca códigos en los **parámetros de origen**, es decir, los que en su nombre contienen `partida` o `item`, como `DOC_N° PARTIDA 1`, `DO_PARTIDA 5`, `DO_Partida_1`, `ITEM`, `DO_E1_Item` o `DO_Código_Item`. No cuentan los que llevan `nom`, `unidad`, `alterno` o `descrip`. Las palabras clave se pueden editar. El orden de búsqueda es:
-   1. parámetros de ejemplar;
-   2. parámetros de tipo;
-   3. solo si los anteriores no tienen nada, los parámetros de sus materiales.
+### 2 · Parámetros
+* **Prefijo** del nombre: `DYCUSA_PARTIDA ` da DYCUSA_PARTIDA 1…6. Con `DYCUSA_` y "dos cifras" da DYCUSA_01…06.
+* **Crear / actualizar parámetros en el modelo**: crea parámetros compartidos con estas características:
+  - de texto y de ejemplar, en *Datos de identidad*;
+  - en todas las categorías de modelo;
+  - con valores que pueden variar entre grupos.
 
-   Solo valen los códigos con forma de partida, de 2 a 6 niveles (`03.01…`). Los códigos de especificación `OE.x.x` se ignoran.
-4. Revisa la tabla (filtro **Por revisar** por defecto) y corrige.
-5. **Escribir pendientes**: escribe la propuesta en todos los elementos *Pendientes*. Si hay filas seleccionadas, escribe solo en ellas.
+  El GUID depende del nombre, así que el mismo nombre es el mismo parámetro en todos los modelos. El archivo de parámetros compartidos queda en `%AppData%\EMASY\DYCUSA_Parametros.txt`.
+* La tabla indica qué parámetros ya existen en el modelo.
+
+### 3 · Enlaces
+Indica de dónde sale cada nivel:
+* **Del código de partida** (lo normal).
+* **Valor fijo**: por ejemplo, nivel 1 = `03` (ARQUITECTURA) para todo el modelo.
+* **Parámetro de Revit**: uno cuyo valor es la descripción del nivel. Por ejemplo, nivel 2 desde `PR_Elemento_Etapa`, donde "ETAPA 1" se convierte en `03.01` y "ETAPA 2" en `03.02`.
+
+**Detectar enlaces automáticamente** propone el valor fijo del nivel 1 y busca en el modelo el parámetro cuyos valores coinciden con las descripciones de los niveles 2 y 3.
+
+Los niveles enlazados sirven para tres cosas:
+* **Filtrar** los códigos que no corresponden. Un código de ETAPA 2 en un elemento de ETAPA 1 se descarta; si es el único que tiene, el elemento queda como *No coincide*.
+* **Ordenar** los elementos sin partida: si tienen la etapa, se escriben al menos los niveles 1 y 2.
+* **Avisar** cuando un valor (p. ej. "ETAPA 3") no está en el presupuesto.
+
+También se configuran aquí las palabras que identifican los parámetros donde ya hay códigos (`partida, item`). Con eso se reconocen, por ejemplo, `DOC_N° PARTIDA 1`, `DO_PARTIDA 5`, `ITEM` o `DO_E1_Item`. No cuentan los que llevan `nom`, `unidad`, `alterno` o `descrip`.
+
+### 4 · Revisión
+**Cómo se elige el código de cada elemento.** Se busca por prioridad:
+1. parámetros de **ejemplar**;
+2. si no resuelven, parámetros de **tipo**;
+3. si tampoco, los de sus **materiales**.
+
+Así un tipo compartido entre etapas no genera conflictos falsos. Dentro de un mismo nivel de prioridad se descartan los códigos que no coinciden con los enlaces y se prefieren las partidas finales del presupuesto.
+
+**La lista de la derecha** es compacta y se expande en tres niveles: **Categoría → grupo (estado + nota) → elementos**. Los elementos se cargan al expandir el grupo, así la lista sale rápido aunque haya decenas de miles. Abajo se ve el detalle del grupo o del elemento: sus opciones con descripción, los niveles escritos, los propuestos y los enlazados.
+
+* **Casillas**: marca categorías, grupos o elementos; las acciones se aplican a lo marcado. Si no hay nada marcado, se aplican al nodo seleccionado.
+* **Escribir pendientes**: escribe los *Pendientes* y los *Solo niveles superiores* (todos, o solo los marcados). Después de escribir, la lista se actualiza sin volver a analizar el modelo.
+* **Asignar esta partida a los marcados**: marca la partida en el presupuesto (izquierda) y los elementos o grupos a la derecha, y pulsa el botón.
+* **Resolver en 3D…**: para grupos de *Conflicto* (o *No coincide*). Abre la vista 3D `EMASY - Revisión partidas` con:
+  - los elementos en conflicto en **rojo**;
+  - elementos que ya tienen cada opción en **azul, verde, naranja o morado**, preferentemente de los mismos niveles;
+  - todo lo demás aislado temporalmente.
+
+  Una ventana pequeña muestra la leyenda. Para decidir, pulsas el botón del color correcto o **"Elegir con un clic en el modelo"** y haces clic en un elemento de ese color. Se asigna a todo el grupo en conflicto y se quitan los colores. Con *Cerrar sin decidir* también se quitan.
+* **Usar selección de Revit**: muestra y marca lo que tienes seleccionado en Revit.
+* **Seleccionar en Revit** (o doble clic en un elemento): selecciona y muestra.
+* **Vaciar parámetros**: deja en blanco los niveles de lo marcado.
+* **Exportar CSV…** genera dos archivos (separador `;`, UTF-8 con BOM):
+  - `… - cobertura.csv`: por partida, el metrado del presupuesto frente al nº de elementos y la cantidad BIM;
+  - `… - elementos.csv`: por elemento, con su grupo, opciones y niveles escritos y propuestos.
 
 ### Estados
 
-| Estado | Significado | Qué hacer |
-|---|---|---|
-| **Conflicto** | El elemento tiene varias partidas finales distintas (p. ej. un piso con contrapiso y piso) | Asignar la correcta desde el árbol |
-| **No está en ppto.** | El código no existe en el presupuesto | Corregir el parámetro de origen o asignar desde el árbol |
-| **Es título** | El código es un título, no una partida final | Asignar la partida final |
-| **Difiere** | Ya tiene DYCUSA, pero los parámetros de origen dicen otra cosa | Revisar; la casilla *"Los parámetros de origen mandan…"* invierte la prioridad |
-| **Pendiente** | Hay propuesta, pero aún no está escrita (o está incompleta) | *Escribir pendientes* |
-| **Sin partida** | Ningún parámetro tiene código (solo se listan las categorías donde otros elementos sí lo tienen) | Asignar desde el árbol |
-| **OK** | DYCUSA 1–6 completos y la partida existe en el presupuesto | — |
+| Estado | Significado |
+|---|---|
+| **Conflicto** | Varias partidas finales posibles en el mismo nivel de prioridad → *Resolver en 3D* |
+| **No coincide con el enlace** | Su código es de otra rama (p. ej. ETAPA 2 en un elemento de ETAPA 1) |
+| **No está en el presupuesto** | El código no existe en el presupuesto |
+| **Es título** | El código es un título, no una partida final |
+| **Difiere de lo escrito** | Lo escrito y el origen no coinciden (en el paso 3 se elige cuál manda) |
+| **Pendiente** | Hay propuesta y falta escribirla |
+| **Solo niveles superiores** | Sin partida, pero la etapa da los niveles 1–2: se pueden escribir ya |
+| **Sin partida** | Ningún dato. Solo se listan las categorías donde otros elementos sí tienen partida (salvo en *Selección de Revit*) |
+| **OK** | Niveles escritos y la partida existe en el presupuesto |
 
-### Árbol del presupuesto (izquierda)
-
-* Entre corchetes aparece el nº de elementos de cada partida o título.
-* Los colores de las partidas finales significan:
-  - **verde**: tiene elementos;
-  - **rojo**: no tiene elementos;
-  - **gris**: no tiene elementos y el comparativo ya indica *"Sin tabla en el modelo BIM"*.
-* **Solo partidas sin elementos**: muestra lo que falta modelar o codificar.
-* **Doble clic** en una partida: la tabla muestra sus elementos.
-* **Asignar partida a N elemento(s)**: marca la partida en el árbol, selecciona los elementos en la tabla y pulsa el botón. Para usar lo que tienes seleccionado en la vista, pulsa *Usar selección de Revit* y la tabla mostrará esa selección. Se escriben los 6 niveles.
-
-### Otros botones
-
-* **Seleccionar en Revit** (o doble clic en una fila): selecciona y muestra los elementos.
-* **Limpiar DYCUSA**: vacía los 6 parámetros de los elementos seleccionados.
-* **Exportar CSV…** genera dos archivos (separador `;`, UTF-8 con BOM):
-  - `… - cobertura.csv`: por partida, el metrado del presupuesto frente al nº de elementos y la cantidad BIM, sumada según la unidad (m² → área, m → longitud, m³ → volumen, und/pza/glb → cantidad), con la diferencia;
-  - `… - elementos.csv`: todos los elementos con estado, origen, propuesta y cantidades.
-
-Todas las escrituras se hacen en una transacción y se deshacen con Ctrl+Z.
+Todas las escrituras se hacen en una transacción y se deshacen con Ctrl+Z. Los errores se muestran una sola vez, en la barra de estado.
 
 ## Limitaciones
 
-* No se leen los elementos de modelos vinculados (los parámetros se escriben en el modelo que los contiene).
-* La cantidad BIM del CSV es orientativa: usa el área, la longitud o el volumen calculados por Revit para el elemento completo, no por capa.
-* Si un parámetro de origen guarda varios códigos en un mismo texto, no se reconoce: debe tener un código por parámetro.
+* No se leen los elementos de modelos vinculados.
+* La cantidad BIM del CSV es orientativa: usa el área, la longitud o el volumen del elemento completo, no por capa.
+* Para saber qué parámetros de ejemplar tiene un elemento, se mira el primer elemento de su tipo, ya que todos los del mismo tipo tienen los mismos parámetros. Lo mismo vale para los materiales, que solo se consultan cuando el elemento y su tipo no tienen código.
 
 ## Compilar
 

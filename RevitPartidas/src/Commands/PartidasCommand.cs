@@ -12,11 +12,15 @@ namespace RevitPartidas.Commands;
 internal enum PartidasAction
 {
 	Scan,
+	SuggestLinks,
+	ParameterStatus,
 	CreateParameters,
 	Write,
-	Clear,
 	Select,
-	ReadSelection
+	ReadSelection,
+	Show3D,
+	Pick3D,
+	Reset3D
 }
 
 /// <summary>Ejecuta las acciones de la ventana en el contexto válido de la API de Revit (ExternalEvent).</summary>
@@ -26,22 +30,37 @@ internal sealed class PartidasHandler : IExternalEventHandler
 
 	public Budget Budget;
 
-	public IList<string> Keywords = new List<string>();
+	public PartidasConfig Config = new PartidasConfig();
 
-	public bool PreferSource;
+	/// <summary>Para Write: elemento → valores de los niveles (null = vaciar).</summary>
+	public Dictionary<long, string[]> Assignments = new Dictionary<long, string[]>();
 
-	/// <summary>Para Write: elemento → código más profundo a escribir (los 6 niveles se derivan de él).</summary>
-	public Dictionary<long, string> Assignments = new Dictionary<long, string>();
-
-	/// <summary>Para Clear y Select.</summary>
+	/// <summary>Para Select y para los elementos en conflicto de Show3D.</summary>
 	public List<long> Ids = new List<long>();
+
+	public List<Review3DOption> Options = new List<Review3DOption>();
+
+	/// <summary>Para Write: después de escribir, quitar los colores de la vista de revisión 3D.</summary>
+	public bool Reset3DAfterWrite;
 
 	/// <summary>Modelo al que pertenece la lista mostrada (las escrituras solo se aplican a ese modelo).</summary>
 	public string DocumentTitle;
 
-	public Action<ScanResult, string, string> OnResult;
+	public Action<ScanResult, string, string> OnScan;
+
+	/// <summary>Elementos escritos (para actualizar la lista sin volver a analizar todo el modelo) y mensaje.</summary>
+	public Action<Dictionary<long, string[]>, string> OnWritten;
 
 	public Action<List<long>> OnSelection;
+
+	public Action<List<LinkSuggestion>> OnSuggestions;
+
+	public Action<bool[], string> OnParameterStatus;
+
+	public Action<long?> OnPicked;
+
+	/// <summary>Mensaje simple (errores, avisos) para la barra de estado.</summary>
+	public Action<string> OnMessage;
 
 	public void Execute(UIApplication app)
 	{
@@ -49,61 +68,64 @@ internal sealed class PartidasHandler : IExternalEventHandler
 		Document doc = uiDoc?.Document;
 		if (doc == null)
 		{
-			OnResult?.Invoke(new ScanResult(), string.Empty, "No hay ningún modelo abierto.");
+			OnMessage?.Invoke("No hay ningún modelo abierto.");
 			return;
 		}
 
 		try
 		{
+			bool sameModel = string.IsNullOrEmpty(DocumentTitle) || DocumentTitle == doc.Title;
 			switch (Action)
 			{
+				case PartidasAction.Scan:
+					OnScan?.Invoke(ElementScanner.Run(doc, Budget, Config), doc.Title, null);
+					break;
+				case PartidasAction.SuggestLinks:
+					OnSuggestions?.Invoke(ElementScanner.SuggestLinks(doc, Budget, Config));
+					break;
+				case PartidasAction.ParameterStatus:
+					OnParameterStatus?.Invoke(SharedParams.FindBound(doc, Config.Names).Select(d => d != null).ToArray(), null);
+					break;
+				case PartidasAction.CreateParameters:
+				{
+					string message = Run(doc, "EMASY: crear parámetros de partida", () => SharedParams.Ensure(doc, Config.Names));
+					OnParameterStatus?.Invoke(SharedParams.FindBound(doc, Config.Names).Select(d => d != null).ToArray(), message);
+					break;
+				}
+				case PartidasAction.Write:
+					if (!sameModel)
+					{
+						OnMessage?.Invoke("El modelo activo cambió: vuelve a analizar antes de escribir.");
+						break;
+					}
+
+					Write(doc);
+					break;
 				case PartidasAction.Select:
 					Select(uiDoc);
-					return;
+					break;
 				case PartidasAction.ReadSelection:
 					OnSelection?.Invoke(uiDoc.Selection.GetElementIds().Select(id => id.Value).ToList());
-					return;
+					break;
+				case PartidasAction.Show3D:
+					OnMessage?.Invoke(Review3D.Show(uiDoc, Ids, Options));
+					break;
+				case PartidasAction.Pick3D:
+					OnPicked?.Invoke(Review3D.Pick(uiDoc));
+					break;
+				case PartidasAction.Reset3D:
+					Review3D.Reset(doc);
+					OnMessage?.Invoke("Se quitaron los colores de la vista de revisión.");
+					break;
 			}
-
-			string message = null;
-			bool sameModel = string.IsNullOrEmpty(DocumentTitle) || DocumentTitle == doc.Title;
-			if (Action != PartidasAction.Scan && Action != PartidasAction.CreateParameters && !sameModel)
-			{
-				message = "El modelo activo cambió: la lista se actualizó, vuelve a seleccionar los elementos.";
-			}
-			else if (Action == PartidasAction.CreateParameters)
-			{
-				message = Run(doc, "EMASY: crear parámetros DYCUSA", () => SharedParams.Ensure(doc));
-			}
-			else if (Action == PartidasAction.Write)
-			{
-				message = Run(doc, "EMASY: escribir partidas DYCUSA", () => Write(doc, Assignments));
-			}
-			else if (Action == PartidasAction.Clear)
-			{
-				message = Run(doc, "EMASY: limpiar partidas DYCUSA", () => Write(doc, Ids.ToDictionary(id => id, id => (string)null)));
-			}
-
-			ScanResult result = ElementScanner.Run(doc, Budget, Keywords, PreferSource);
-			if (result.DycusaBound < SharedParams.Names.Length)
-			{
-				result.Notes.Add("Faltan los parámetros DYCUSA en el modelo: pulsa \"Crear parámetros DYCUSA\".");
-			}
-
-			if (result.Notes.Count > 0)
-			{
-				message = (message == null ? string.Empty : message + "  ·  ") + string.Join("  ·  ", result.Notes);
-			}
-
-			OnResult?.Invoke(result, doc.Title, message);
 		}
 		catch (Exception ex)
 		{
-			OnResult?.Invoke(null, doc.Title, "Error: " + ex.Message);
+			OnMessage?.Invoke("Error: " + ex.Message);
 		}
 	}
 
-	public string GetName() => "EMASY · Partidas DYCUSA";
+	public string GetName() => "EMASY · Partidas";
 
 	private static string Run(Document doc, string name, Func<string> body)
 	{
@@ -113,65 +135,71 @@ internal sealed class PartidasHandler : IExternalEventHandler
 		return transaction.Commit() == TransactionStatus.Committed ? message : "Revit rechazó la transacción: no se guardaron cambios.";
 	}
 
-	/// <summary>Escribe los 6 niveles a partir del código más profundo (null limpia los 6).</summary>
-	private static string Write(Document doc, Dictionary<long, string> assignments)
+	private void Write(Document doc)
 	{
-		int written = 0;
+		string[] names = Config.Names;
+		Guid[] guids = names.Select(SharedParams.GuidFor).ToArray();
+		var written = new Dictionary<long, string[]>();
 		int missing = 0;
 		int failed = 0;
-		foreach (KeyValuePair<long, string> assignment in assignments)
+		using (var transaction = new Transaction(doc, "EMASY: escribir partidas"))
 		{
-			Element element = doc.GetElement(new ElementId(assignment.Key));
-			if (element == null)
+			transaction.Start();
+			foreach (KeyValuePair<long, string[]> assignment in Assignments)
 			{
-				failed++;
-				continue;
-			}
-
-			Parameter[] parameters = SharedParams.Get(element);
-			if (parameters.Any(p => p == null))
-			{
-				missing++;
-				continue;
-			}
-
-			string[] levels = PartidaCode.Levels(assignment.Value);
-			bool ok = true;
-			for (int i = 0; i < parameters.Length; i++)
-			{
-				if (parameters[i].IsReadOnly)
+				Element element = doc.GetElement(new ElementId(assignment.Key));
+				if (element == null)
 				{
-					ok = false;
-					break;
+					failed++;
+					continue;
 				}
 
-				try
+				Parameter[] parameters = SharedParams.Get(element, names, guids);
+				if (parameters.Any(p => p == null))
 				{
-					if ((parameters[i].AsString() ?? string.Empty) != levels[i])
+					missing++;
+					continue;
+				}
+
+				string[] levels = assignment.Value ?? new string[names.Length];
+				bool ok = true;
+				for (int i = 0; i < parameters.Length; i++)
+				{
+					string value = i < levels.Length ? levels[i] ?? string.Empty : string.Empty;
+					try
 					{
-						ok &= parameters[i].Set(levels[i]);
+						if ((parameters[i].AsString() ?? string.Empty) != value)
+						{
+							ok &= !parameters[i].IsReadOnly && parameters[i].Set(value);
+						}
+					}
+					catch (Exception)
+					{
+						ok = false;
 					}
 				}
-				catch (Exception)
+
+				if (ok)
 				{
-					ok = false;
+					written[assignment.Key] = parameters.Select(p => p.AsString() ?? string.Empty).ToArray();
+				}
+				else
+				{
+					failed++;
 				}
 			}
 
-			if (ok)
+			if (transaction.Commit() != TransactionStatus.Committed)
 			{
-				written++;
-			}
-			else
-			{
-				failed++;
+				OnMessage?.Invoke("Revit rechazó la transacción: no se guardaron cambios.");
+				return;
 			}
 		}
 
-		string text = $"{written} elemento(s) actualizado(s).";
+		string text = $"{written.Count} elemento(s) actualizado(s).";
 		if (missing > 0)
 		{
-			text += $" {missing} sin parámetros DYCUSA (crea los parámetros primero).";
+			text += $" {missing} sin los parámetros (créalos en el paso 2).";
 		}
 
 		if (failed > 0)
@@ -179,7 +207,13 @@ internal sealed class PartidasHandler : IExternalEventHandler
 			text += $" {failed} no se pudieron escribir (de solo lectura, en un grupo o vínculo).";
 		}
 
-		return text;
+		if (Reset3DAfterWrite)
+		{
+			Reset3DAfterWrite = false;
+			Review3D.Reset(doc);
+		}
+
+		OnWritten?.Invoke(written, text);
 	}
 
 	private void Select(UIDocument uiDoc)
@@ -197,10 +231,12 @@ internal sealed class PartidasHandler : IExternalEventHandler
 				// Elementos que no se ven en la vista activa: quedan seleccionados igualmente.
 			}
 		}
+
+		OnMessage?.Invoke($"{ids.Count} elemento(s) seleccionados en Revit.");
 	}
 }
 
-/// <summary>Abre (o trae al frente) la ventana de partidas DYCUSA.</summary>
+/// <summary>Abre (o trae al frente) la ventana de partidas.</summary>
 [Transaction(TransactionMode.Manual)]
 [Regeneration(RegenerationOption.Manual)]
 public class PartidasCommand : IExternalCommand
