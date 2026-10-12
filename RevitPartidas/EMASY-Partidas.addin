@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>EMASY Partidas</Name>
+    <Assembly>EMASY-Partidas-2024\RevitPartidas.dll</Assembly>
+    <AddInId>4B9E6C21-5F0A-4D8B-9C3E-7A1D2E6F8B40</AddInId>
+    <FullClassName>RevitPartidas.App</FullClassName>
+    <VendorId>EMASY</VendorId>
+    <VendorDescription>EMASY - Partidas</VendorDescription>
+  </AddIn>
+</RevitAddIns>
