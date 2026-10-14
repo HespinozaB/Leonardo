@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>EMASY MCP</Name>
+    <Assembly>EMASY-MCP-2026\RevitMcp.dll</Assembly>
+    <AddInId>B4E1C6A2-5F3D-4E8B-9C71-2A6D8F0E3B54</AddInId>
+    <FullClassName>RevitMcp.App</FullClassName>
+    <VendorId>EMASY</VendorId>
+    <VendorDescription>EMASY - Puente MCP para Claude</VendorDescription>
+  </AddIn>
+</RevitAddIns>

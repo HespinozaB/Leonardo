@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>RevitMcp</AssemblyName>
+    <RootNamespace>RevitMcp</RootNamespace>
+    <!-- Revit 2026 corre sobre .NET 8. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>EMASY</Product>
+    <Company>EMASY</Company>
+    <Description>Puente local entre Revit 2026 y un servidor MCP (Claude).</Description>
+    <OutputPath>bin\$(Configuration)\EMASY-MCP-2026\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Copia Roslyn a la salida (lo usa run_csharp). Versión baja a propósito: si Revit ya cargó
+         una más nueva (el editor de macros usa Roslyn), .NET reutiliza esa. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <SatelliteResourceLanguages>es;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ensamblados de referencia de Revit 2026 (no se copian a la salida). -->
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2026.4.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="2026.4.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.8.0" />
+  </ItemGroup>
+
+</Project>
