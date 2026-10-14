@@ -65,6 +65,8 @@ Claude Code: `claude mcp add revit -s user -- node "%LOCALAPPDATA%\EMASY\RevitMc
 
 ## Problemas frecuentes
 
+* **"revit" no aparece en Claude Desktop** (Configuración › Desarrollador): si Claude Desktop viene de la Microsoft Store, lee su configuración de `%LocalAppData%\Packages\Claude_*\LocalCache\Roaming\Claude\`. El instalador ya la configura; si no, pulsa *Editar configuración* en esa pantalla, añade el bloque de la sección *Configuración manual* y cierra Claude Desktop del todo (icono junto al reloj › Salir).
+* **Claude mueve el ratón en vez de usar el MCP**: está usando el control del ordenador. Desactívalo en ese chat o pídele "usa las herramientas del MCP revit".
 * **"No hay conexión con Revit"**: Revit no está abierto, el addin no se cargó (revisa que Windows no bloqueó la DLL; el instalador la desbloquea) o el puerto está ocupado.
 * **Dos Revit abiertos**: solo el primero abre el puerto 8765. Para usar otro, cambia `Port` en `bridge.json` (afecta a ambos lados).
 * **"Revit no respondió a tiempo"**: Revit tiene un diálogo abierto o está ejecutando un comando. Ciérralo y repite.

@@ -20,10 +20,15 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $addinsDir = Join-Path $env:APPDATA 'Autodesk\Revit\Addins\2026'
 $serverDir = Join-Path $env:LOCALAPPDATA 'EMASY\RevitMcp\server'
-$desktopConfig = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
+# Claude Desktop normal lee %AppData%\Claude; el de la Microsoft Store (MSIX) lee una copia
+# virtualizada dentro de su paquete. Se configuran todas las que existan.
+$desktopConfigs = @(Join-Path $env:APPDATA 'Claude\claude_desktop_config.json')
+Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
+  $desktopConfigs += Join-Path $_.FullName 'LocalCache\Roaming\Claude\claude_desktop_config.json'
+}
 $serverEntry = Join-Path $serverDir 'index.js'
 
-function Update-DesktopConfig([scriptblock]$change) {
+function Update-DesktopConfig([string]$desktopConfig, [scriptblock]$change) {
   $config = [pscustomobject]@{}
   if (Test-Path $desktopConfig) {
     Copy-Item $desktopConfig "$desktopConfig.bak" -Force
@@ -44,8 +49,10 @@ if ($Uninstall) {
   Remove-Item (Join-Path $addinsDir 'RevitMcp.addin') -Force -ErrorAction SilentlyContinue
   Remove-Item (Join-Path $addinsDir 'EMASY-MCP-2026') -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $serverDir -Recurse -Force -ErrorAction SilentlyContinue
-  if ((Test-Path $desktopConfig) -and -not $SkipClaudeDesktop) {
-    Update-DesktopConfig { param($servers) $servers.PSObject.Properties.Remove('revit') }
+  if (-not $SkipClaudeDesktop) {
+    foreach ($desktopConfig in $desktopConfigs | Where-Object { Test-Path $_ }) {
+      Update-DesktopConfig $desktopConfig { param($servers) $servers.PSObject.Properties.Remove('revit') }
+    }
   }
   if ((Get-Command claude -ErrorAction SilentlyContinue) -and -not $SkipClaudeCode) {
     & claude mcp remove revit -s user 2>$null | Out-Null
@@ -82,13 +89,16 @@ $nodePath = if ($node) { $node.Source } else { 'node' }
 
 # 3. Claude Desktop
 if (-not $SkipClaudeDesktop) {
-  Update-DesktopConfig {
-    param($servers)
-    $entry = [pscustomobject]@{ command = $nodePath; args = @($serverEntry) }
-    if ($servers.PSObject.Properties['revit']) { $servers.revit = $entry }
-    else { $servers | Add-Member -NotePropertyName revit -NotePropertyValue $entry }
+  foreach ($desktopConfig in $desktopConfigs) {
+    Update-DesktopConfig $desktopConfig {
+      param($servers)
+      $entry = [pscustomobject]@{ command = $nodePath; args = @($serverEntry) }
+      if ($servers.PSObject.Properties['revit']) { $servers.revit = $entry }
+      else { $servers | Add-Member -NotePropertyName revit -NotePropertyValue $entry }
+    }
+    Write-Host "Claude Desktop configurado ($desktopConfig)." -ForegroundColor Green
   }
-  Write-Host "Claude Desktop configurado ($desktopConfig). Reinicia Claude Desktop." -ForegroundColor Green
+  Write-Host 'Cierra Claude Desktop del todo (icono junto al reloj > Salir) y vuelve a abrirlo.' -ForegroundColor Green
 }
 
 # 4. Claude Code (CLI), si está instalado
