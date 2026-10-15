@@ -11,17 +11,19 @@ using ExternalEvent = Autodesk.Revit.UI.ExternalEvent;
 namespace RevitPartidas.UI;
 
 /// <summary>
-/// Ventana no modal en 4 pasos: 1 Jerarquía (presupuesto y número de niveles), 2 Parámetros (nombres y creación),
-/// 3 Enlaces (niveles que salen de un dato fijo o de un parámetro de Revit, p. ej. la ETAPA) y 4 Revisión.
+/// Ventana no modal en 3 pasos: 1 Código de montaje (presupuesto, niveles, parámetros de nivel y tabla de códigos de montaje),
+/// 2 Filtros (qué niveles son fijos y cuáles salen de un parámetro, p. ej. la ETAPA, con su regla de valores) y 3 Revisión.
 /// </summary>
 internal sealed partial class PartidasForm : Form
 {
-	private const int TabHierarchy = 0;
-	private const int TabParameters = 1;
-	private const int TabLinks = 2;
-	private const int TabReview = 3;
+	private const int TabMontaje = 0;
+	private const int TabFilters = 1;
+	private const int TabReview = 2;
 
-	private static readonly string[] LinkModeText = { "Del código de partida", "Valor fijo", "Parámetro de Revit" };
+	private const string RuleAuto = "(automático)";
+	private const string RuleIgnore = "(ignorar este valor)";
+
+	private static readonly string[] LinkModeText = { "Del código de montaje", "Valor fijo", "Parámetro de Revit" };
 
 	private readonly PartidasHandler _handler;
 	private readonly ExternalEvent _event;
@@ -35,23 +37,25 @@ internal sealed partial class PartidasForm : Form
 	private readonly Label _budgetLabel = new Label();
 	private readonly NumericUpDown _levels = new NumericUpDown();
 	private readonly ListView _hierarchy = new ListView();
-
-	// Paso 2.
 	private readonly TextBox _prefix = new TextBox();
 	private readonly CheckBox _twoDigits = new CheckBox();
 	private readonly ListView _parameters = new ListView();
 	private readonly Button _createParams = new Button();
+	private readonly Button _loadMontaje = new Button();
 	private bool[] _parametersExist = Array.Empty<bool>();
 
-	// Paso 3.
+	// Paso 2.
 	private readonly DataGridView _links = new DataGridView();
+	private readonly DataGridView _rules = new DataGridView();
 	private readonly Button _suggest = new Button();
-	private readonly TextBox _keywords = new TextBox();
+	private readonly Button _readValues = new Button();
 	private readonly CheckBox _preferSource = new CheckBox();
 	private readonly Button _analyze = new Button();
 	private readonly Dictionary<int, string> _linkExamples = new Dictionary<int, string>();
+	private Dictionary<int, Dictionary<string, int>> _linkValues = new Dictionary<int, Dictionary<string, int>>();
 
 	private Budget _budget;
+	private BudgetMatcher _matcher;
 	private string _documentTitle = string.Empty;
 	private string _scanSignature;
 	private bool _busy;
@@ -62,9 +66,10 @@ internal sealed partial class PartidasForm : Form
 		_handler = handler;
 		_event = externalEvent;
 		_handler.OnScan = (result, title, message) => OnUi(() => SetScan(result, title, message));
-		_handler.OnWritten = (written, message) => OnUi(() => SetWritten(written, message));
+		_handler.OnWritten = (written, types, message) => OnUi(() => SetWritten(written, types, message));
 		_handler.OnSelection = ids => OnUi(() => SetRevitSelection(ids));
 		_handler.OnSuggestions = suggestions => OnUi(() => SetSuggestions(suggestions));
+		_handler.OnLinkValues = values => OnUi(() => SetLinkValues(values));
 		_handler.OnParameterStatus = (exist, message) => OnUi(() => SetParameterStatus(exist, message));
 		_handler.OnPicked = id => OnUi(() => SetPicked(id));
 		_handler.OnMessage = message => OnUi(() => Done(message));
@@ -89,6 +94,8 @@ internal sealed partial class PartidasForm : Form
 			else
 			{
 				RefreshHierarchy();
+				RefreshParameterNames();
+				Raise(PartidasAction.ParameterStatus, null);
 			}
 		});
 	}
@@ -177,7 +184,7 @@ internal sealed partial class PartidasForm : Form
 	{
 		Text = text,
 		AutoSize = true,
-		MaximumSize = wrap ? new Size(900, 0) : Size.Empty,
+		MaximumSize = wrap ? new Size(1100, 0) : Size.Empty,
 		Margin = new Padding(0, 6, 6, 0)
 	};
 
@@ -189,15 +196,14 @@ internal sealed partial class PartidasForm : Form
 	{
 		Text = "EMASY · Partidas";
 		StartPosition = FormStartPosition.CenterScreen;
-		Size = new Size(1400, 800);
+		Size = new Size(1400, 820);
 		MinimumSize = new Size(950, 500);
 		Font = new Font("Segoe UI", 9f);
 		ShowInTaskbar = false;
 
 		_tabs.Dock = DockStyle.Fill;
-		_tabs.TabPages.Add(BuildHierarchyPage());
-		_tabs.TabPages.Add(BuildParametersPage());
-		_tabs.TabPages.Add(BuildLinksPage());
+		_tabs.TabPages.Add(BuildMontajePage());
+		_tabs.TabPages.Add(BuildFiltersPage());
 		_tabs.TabPages.Add(BuildReviewPage());
 		_tabs.SelectedIndexChanged += (s, e) => Safe(OnTabChanged);
 
@@ -217,12 +223,13 @@ internal sealed partial class PartidasForm : Form
 		};
 	}
 
-	private TabPage BuildHierarchyPage()
+	private TabPage BuildMontajePage()
 	{
-		var page = new TabPage("1 · Jerarquía");
-		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 140, Padding = new Padding(10), FlowDirection = FlowDirection.LeftToRight };
-		top.Controls.Add(NewLabel("Elige el presupuesto y cuántos niveles (órdenes) tiene su codificación. Ejemplo con 6 niveles: 03 / 03.01 / 03.01.04 / 03.01.04.02 / 03.01.04.02.01 / 03.01.04.02.01.01.", wrap: true));
+		var page = new TabPage("1 · Código de montaje");
+		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 170, Padding = new Padding(10) };
+		top.Controls.Add(NewLabel("El Código de montaje de cada tipo dice su partida y llena solo los parámetros de nivel. Aquí se carga el presupuesto, se eligen los niveles y sus parámetros, y se genera la tabla de códigos de montaje del modelo con las partidas del presupuesto (así en Revit el Código de montaje ofrece las partidas y la Descripción de montaje se llena con su nombre).", wrap: true));
 		top.SetFlowBreak(top.Controls[0], true);
+
 		_loadBudget.Text = "Cargar presupuesto…";
 		_loadBudget.AutoSize = true;
 		_loadBudget.Click += Do(ChooseBudget);
@@ -233,51 +240,24 @@ internal sealed partial class PartidasForm : Form
 		_budgetLabel.Text = "(sin presupuesto)";
 		top.Controls.Add(_budgetLabel);
 		top.SetFlowBreak(_budgetLabel, true);
-		top.Controls.Add(NewLabel("Número de niveles:"));
+
+		top.Controls.Add(NewLabel("Niveles (órdenes):"));
 		_levels.Minimum = 1;
 		_levels.Maximum = PartidaCode.MaxLevels;
-		_levels.Value = _config.Levels;
-		_levels.Width = 60;
+		_levels.Value = Math.Min(PartidaCode.MaxLevels, Math.Max(1, _config.Levels));
+		_levels.Width = 55;
 		_levels.ValueChanged += (s, e) => Safe(() =>
 		{
 			_config.Levels = (int)_levels.Value;
 			_config.Save();
+			_parametersExist = Array.Empty<bool>();
 			RefreshHierarchy();
 			RefreshParameterNames();
 			RefreshLinks();
 		});
 		top.Controls.Add(_levels);
-		top.Controls.Add(NewButton("Detectar del presupuesto", Do(() =>
-		{
-			if (_budget != null)
-			{
-				_levels.Value = Math.Min(PartidaCode.MaxLevels, Math.Max(1, _budget.All.Max(i => i.Depth)));
-			}
-		})));
-		top.Controls.Add(NewButton("Siguiente →", Do(() => _tabs.SelectedIndex = TabParameters), bold: true));
-
-		_hierarchy.Dock = DockStyle.Fill;
-		_hierarchy.View = View.Details;
-		_hierarchy.FullRowSelect = true;
-		_hierarchy.GridLines = true;
-		_hierarchy.Columns.Add("Nivel", 60);
-		_hierarchy.Columns.Add("Ejemplo de código", 170);
-		_hierarchy.Columns.Add("Descripción en el presupuesto", 560);
-		_hierarchy.Columns.Add("Códigos de este nivel en el presupuesto", 230);
-
-		page.Controls.Add(_hierarchy);
-		page.Controls.Add(top);
-		return page;
-	}
-
-	private TabPage BuildParametersPage()
-	{
-		var page = new TabPage("2 · Parámetros");
-		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(10) };
-		top.Controls.Add(NewLabel("Nombre de los parámetros: el prefijo más el número de nivel (p. ej. \"DYCUSA_PARTIDA \" → DYCUSA_PARTIDA 1 … 6, o \"DYCUSA_\" con dos cifras → DYCUSA_01 … 06). Son compartidos, de texto y de ejemplar, en Datos de identidad, en todas las categorías de modelo.", wrap: true));
-		top.SetFlowBreak(top.Controls[0], true);
-		top.Controls.Add(NewLabel("Prefijo:"));
-		_prefix.Width = 220;
+		top.Controls.Add(NewLabel("   Parámetros de nivel: prefijo"));
+		_prefix.Width = 170;
 		_prefix.Text = _config.Prefix;
 		_prefix.TextChanged += (s, e) => Safe(() =>
 		{
@@ -288,9 +268,9 @@ internal sealed partial class PartidasForm : Form
 			RefreshLinks();
 		});
 		top.Controls.Add(_prefix);
-		_twoDigits.Text = "Número con dos cifras (01, 02…)";
+		_twoDigits.Text = "dos cifras (01, 02…)";
 		_twoDigits.AutoSize = true;
-		_twoDigits.Margin = new Padding(12, 5, 0, 0);
+		_twoDigits.Margin = new Padding(8, 5, 0, 0);
 		_twoDigits.Checked = _config.TwoDigits;
 		_twoDigits.CheckedChanged += (s, e) => Safe(() =>
 		{
@@ -302,51 +282,71 @@ internal sealed partial class PartidasForm : Form
 		});
 		top.Controls.Add(_twoDigits);
 		top.SetFlowBreak(_twoDigits, true);
-		_createParams.Text = "Crear / actualizar parámetros en el modelo";
+
+		_createParams.Text = "Crear / actualizar parámetros de nivel";
 		_createParams.AutoSize = true;
-		_createParams.Font = new Font(Font, FontStyle.Bold);
 		_createParams.Click += Do(() => Raise(PartidasAction.CreateParameters, "Creando parámetros…"));
 		top.Controls.Add(_createParams);
-		top.Controls.Add(NewButton("Siguiente →", Do(() => _tabs.SelectedIndex = TabLinks), bold: true));
+		_loadMontaje.Text = "Generar y cargar códigos de montaje del presupuesto";
+		_loadMontaje.AutoSize = true;
+		_loadMontaje.Font = new Font(Font, FontStyle.Bold);
+		_loadMontaje.Click += Do(LoadMontaje);
+		top.Controls.Add(_loadMontaje);
+		top.Controls.Add(NewButton("Siguiente →", Do(() => _tabs.SelectedIndex = TabFilters), bold: true));
 
-		_parameters.Dock = DockStyle.Fill;
+		_hierarchy.View = View.Details;
+		_hierarchy.FullRowSelect = true;
+		_hierarchy.GridLines = true;
+		_hierarchy.Dock = DockStyle.Fill;
+		_hierarchy.Columns.Add("Nivel", 50);
+		_hierarchy.Columns.Add("Ejemplo", 150);
+		_hierarchy.Columns.Add("Descripción en el presupuesto", 380);
+		_hierarchy.Columns.Add("Códigos del nivel", 110);
 		_parameters.View = View.Details;
 		_parameters.FullRowSelect = true;
 		_parameters.GridLines = true;
-		_parameters.Columns.Add("Nivel", 60);
-		_parameters.Columns.Add("Parámetro", 260);
-		_parameters.Columns.Add("En el modelo", 160);
-		_parameters.Columns.Add("Ejemplo de valor", 200);
+		_parameters.Dock = DockStyle.Fill;
+		_parameters.Columns.Add("Nivel", 50);
+		_parameters.Columns.Add("Parámetro", 200);
+		_parameters.Columns.Add("En el modelo", 140);
 
-		page.Controls.Add(_parameters);
+		var lists = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(6) };
+		lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+		lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+		lists.Controls.Add(_hierarchy, 0, 0);
+		lists.Controls.Add(_parameters, 1, 0);
+
+		page.Controls.Add(lists);
 		page.Controls.Add(top);
 		return page;
 	}
 
-	private TabPage BuildLinksPage()
+	private TabPage BuildFiltersPage()
 	{
-		var page = new TabPage("3 · Enlaces");
+		var page = new TabPage("2 · Filtros");
 		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 92, Padding = new Padding(10) };
-		top.Controls.Add(NewLabel("Cada nivel sale del código de partida, de un valor fijo (p. ej. nivel 1 = 03 ARQUITECTURA para todo) o de un parámetro de Revit cuyo valor es la descripción del nivel (p. ej. PR_Elemento_Etapa = \"ETAPA 1\" → 03.01). Los niveles enlazados ordenan la información y descartan los códigos que no corresponden (p. ej. un código de ETAPA 2 en un elemento de ETAPA 1).", wrap: true));
+		top.Controls.Add(NewLabel("Indica qué niveles son fijos y cuáles salen de un parámetro de Revit. Ejemplo: nivel 1 = valor fijo 03 (todo es ARQUITECTURA); nivel 2 = parámetro de etapa, con la regla \"ETAPA 1\" → 03.01 y \"ETAPA 2\" → 03.02. El filtro decide la rama: un código de montaje de la otra etapa se cambia por su equivalente con la misma descripción, y si no lo hay se avisa.", wrap: true));
 		top.SetFlowBreak(top.Controls[0], true);
-		_suggest.Text = "Detectar enlaces automáticamente";
+		_suggest.Text = "Detectar filtros automáticamente";
 		_suggest.AutoSize = true;
 		_suggest.Click += Do(() => Raise(PartidasAction.SuggestLinks, "Buscando parámetros que coincidan con el presupuesto…"));
 		top.Controls.Add(_suggest);
+		_readValues.Text = "Leer valores de los parámetros del filtro";
+		_readValues.AutoSize = true;
+		_readValues.Click += Do(() => Raise(PartidasAction.LinkValues, "Leyendo los valores del modelo…"));
+		top.Controls.Add(_readValues);
 
 		_links.Dock = DockStyle.Fill;
 		_links.AllowUserToAddRows = false;
 		_links.AllowUserToDeleteRows = false;
 		_links.RowHeadersVisible = false;
-		_links.SelectionMode = DataGridViewSelectionMode.CellSelect;
-		_links.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
 		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Nivel", Width = 50, ReadOnly = true });
-		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Parámetro destino", Width = 200, ReadOnly = true });
-		var mode = new DataGridViewComboBoxColumn { HeaderText = "Origen", Width = 180, FlatStyle = FlatStyle.Flat };
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Parámetro destino", Width = 190, ReadOnly = true });
+		var mode = new DataGridViewComboBoxColumn { HeaderText = "Origen", Width = 170, FlatStyle = FlatStyle.Flat };
 		mode.Items.AddRange(LinkModeText);
 		_links.Columns.Add(mode);
-		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Código fijo / nombre del parámetro de Revit", Width = 300 });
-		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Comprobación", Width = 480, ReadOnly = true });
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Código fijo / parámetro de regla", Width = 260 });
+		_links.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Comprobación", Width = 560, ReadOnly = true });
 		_links.CurrentCellDirtyStateChanged += (s, e) =>
 		{
 			if (_links.IsCurrentCellDirty && _links.CurrentCell is DataGridViewComboBoxCell)
@@ -357,19 +357,43 @@ internal sealed partial class PartidasForm : Form
 		_links.CellValueChanged += (s, e) => Safe(() => OnLinkEdited(e.RowIndex));
 		_links.DataError += (s, e) => e.ThrowException = false;
 
-		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 76, Padding = new Padding(10, 6, 10, 0) };
-		bottom.Controls.Add(NewLabel("Parámetros donde ya hay códigos de partida (el nombre contiene):"));
-		_keywords.Width = 180;
-		_keywords.Text = _config.Keywords;
-		_keywords.TextChanged += (s, e) =>
+		_rules.Dock = DockStyle.Fill;
+		_rules.AllowUserToAddRows = false;
+		_rules.AllowUserToDeleteRows = false;
+		_rules.RowHeadersVisible = false;
+		_rules.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Nivel", Width = 50, ReadOnly = true });
+		_rules.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Parámetro", Width = 190, ReadOnly = true });
+		_rules.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Valor en el modelo", Width = 230, ReadOnly = true });
+		_rules.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Elementos", Width = 80, ReadOnly = true });
+		_rules.Columns.Add(new DataGridViewComboBoxColumn { HeaderText = "Regla: código del nivel", Width = 420, FlatStyle = FlatStyle.Flat });
+		_rules.CurrentCellDirtyStateChanged += (s, e) =>
 		{
-			_config.Keywords = _keywords.Text;
-			_config.Save();
+			if (_rules.IsCurrentCellDirty && _rules.CurrentCell is DataGridViewComboBoxCell)
+			{
+				_rules.CommitEdit(DataGridViewDataErrorContexts.Commit);
+			}
 		};
-		bottom.Controls.Add(_keywords);
-		_preferSource.Text = "Los parámetros de origen mandan sobre lo ya escrito";
+		_rules.CellValueChanged += (s, e) => Safe(() => OnRuleEdited(e.RowIndex));
+		_rules.DataError += (s, e) => e.ThrowException = false;
+
+		var grids = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
+		grids.Panel1.Controls.Add(_links);
+		var rulesPanel = new Panel { Dock = DockStyle.Fill };
+		rulesPanel.Controls.Add(_rules);
+		rulesPanel.Controls.Add(new Label
+		{
+			Dock = DockStyle.Top,
+			Height = 22,
+			Padding = new Padding(4, 4, 0, 0),
+			Text = "Regla de los parámetros del filtro: qué código corresponde a cada valor (pulsa \"Leer valores\" para verlos).",
+			ForeColor = Color.DimGray
+		});
+		grids.Panel2.Controls.Add(rulesPanel);
+
+		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(10, 6, 10, 0), WrapContents = false };
+		_preferSource.Text = "El código de montaje manda sobre lo ya escrito en los parámetros de nivel";
 		_preferSource.AutoSize = true;
-		_preferSource.Margin = new Padding(12, 5, 0, 0);
+		_preferSource.Margin = new Padding(0, 5, 12, 0);
 		_preferSource.Checked = _config.PreferSource;
 		_preferSource.CheckedChanged += (s, e) => Safe(() =>
 		{
@@ -378,7 +402,6 @@ internal sealed partial class PartidasForm : Form
 			ReevaluateAll();
 		});
 		bottom.Controls.Add(_preferSource);
-		bottom.SetFlowBreak(_preferSource, true);
 		_analyze.Text = "Analizar modelo →";
 		_analyze.AutoSize = true;
 		_analyze.Font = new Font(Font, FontStyle.Bold);
@@ -390,24 +413,29 @@ internal sealed partial class PartidasForm : Form
 		});
 		bottom.Controls.Add(_analyze);
 
-		page.Controls.Add(_links);
+		page.Controls.Add(grids);
 		page.Controls.Add(bottom);
 		page.Controls.Add(top);
+		page.Layout += (s, e) =>
+		{
+			if (grids.Height > 200)
+			{
+				Safe(() => grids.SplitterDistance = Math.Max(120, grids.Height / 2 - 40));
+			}
+		};
 		return page;
 	}
 
 	#endregion
 
-	#region Pasos 1 a 3
+	#region Pasos 1 y 2
 
 	private void OnTabChanged()
 	{
 		switch (_tabs.SelectedIndex)
 		{
-			case TabHierarchy:
+			case TabMontaje:
 				RefreshHierarchy();
-				break;
-			case TabParameters:
 				RefreshParameterNames();
 				if (!_busy)
 				{
@@ -415,8 +443,9 @@ internal sealed partial class PartidasForm : Form
 				}
 
 				break;
-			case TabLinks:
+			case TabFilters:
 				RefreshLinks();
+				RefreshRules();
 				break;
 			case TabReview:
 				if (_budget == null)
@@ -433,10 +462,14 @@ internal sealed partial class PartidasForm : Form
 		}
 	}
 
-	/// <summary>Lo que obliga a volver a analizar si cambia (niveles, nombres, enlaces, palabras clave, presupuesto).</summary>
+	/// <summary>Lo que obliga a volver a analizar si cambia (niveles, nombres, filtros, reglas, presupuesto).</summary>
 	private string Signature() =>
-		string.Join("|", _config.Levels, _config.Prefix, _config.TwoDigits, _config.Keywords, _budget?.SourcePath,
-			string.Join(";", Enumerable.Range(0, _config.Levels).Select(i => $"{_config.Link(i).Mode}:{_config.Link(i).FixedCode}:{_config.Link(i).ParameterName}")));
+		string.Join("|", _config.Levels, _config.Prefix, _config.TwoDigits, _budget?.SourcePath,
+			string.Join(";", Enumerable.Range(0, _config.Levels).Select(i =>
+			{
+				LevelLink link = _config.Link(i);
+				return $"{link.Mode}:{link.FixedCode}:{link.ParameterName}:{string.Join(",", link.ValueMap.Select(p => p.Key + "=" + p.Value))}";
+			})));
 
 	private void ChooseBudget()
 	{
@@ -461,6 +494,7 @@ internal sealed partial class PartidasForm : Form
 		try
 		{
 			_budget = BudgetReader.Read(path);
+			_matcher = new BudgetMatcher(_budget);
 		}
 		catch (Exception ex)
 		{
@@ -472,6 +506,23 @@ internal sealed partial class PartidasForm : Form
 		_budgetLabel.Text = $"{Path.GetFileName(path)} · {_budget.All.Count(i => i.IsLeaf)} partidas · hasta {_budget.All.Max(i => i.Depth)} niveles";
 		RefreshHierarchy();
 		BuildBudgetTree();
+	}
+
+	private void LoadMontaje()
+	{
+		if (_budget == null)
+		{
+			MessageBox.Show(this, "Primero carga el presupuesto.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		if (MessageBox.Show(this, $"Se generará la tabla de códigos de montaje con los {_budget.ByCode.Count} códigos del presupuesto " +
+				$"(hasta {_config.Levels} niveles) y se cargará en el modelo, reemplazando la tabla actual (p. ej. Uniformat).\n\n" +
+				"Los códigos de montaje ya escritos en los tipos no se borran.\n¿Continuar?", Text, MessageBoxButtons.OKCancel,
+				MessageBoxIcon.Question) == DialogResult.OK)
+		{
+			Raise(PartidasAction.LoadAssemblyCodes, "Generando y cargando los códigos de montaje…");
+		}
 	}
 
 	private void RefreshHierarchy()
@@ -492,10 +543,6 @@ internal sealed partial class PartidasForm : Form
 		}
 
 		_hierarchy.EndUpdate();
-		if (_budget != null && example != null && example.Depth > _config.Levels)
-		{
-			_status.Text = $"Atención: el presupuesto tiene códigos de {example.Depth} niveles y elegiste {_config.Levels}; los niveles más profundos no se guardarán.";
-		}
 	}
 
 	private void RefreshParameterNames()
@@ -503,12 +550,10 @@ internal sealed partial class PartidasForm : Form
 		_parameters.BeginUpdate();
 		_parameters.Items.Clear();
 		string[] names = _config.Names;
-		BudgetItem example = _budget?.All.Where(i => i.IsLeaf).OrderByDescending(i => i.Depth).FirstOrDefault();
-		string[] levels = PartidaCode.Levels(example?.Code, _config.Levels);
 		for (int i = 0; i < names.Length; i++)
 		{
 			string exists = i < _parametersExist.Length ? (_parametersExist[i] ? "Sí" : "No (falta crearlo)") : "…";
-			var item = new ListViewItem(new[] { (i + 1).ToString(), names[i], exists, levels[i] });
+			var item = new ListViewItem(new[] { (i + 1).ToString(), names[i], exists });
 			if (i < _parametersExist.Length)
 			{
 				item.ForeColor = _parametersExist[i] ? Color.ForestGreen : Color.Firebrick;
@@ -526,7 +571,7 @@ internal sealed partial class PartidasForm : Form
 		bool wereMissing = _parametersExist.Length == 0 || _parametersExist.Any(e => !e);
 		_parametersExist = exist;
 		RefreshParameterNames();
-		if (message != null && wereMissing && exist.All(e => e))
+		if (message != null && wereMissing && exist.All(e => e) && _rows.Count > 0)
 		{
 			// Recién creados: los elementos ya tienen los parámetros (vacíos); no hace falta volver a analizar.
 			foreach (ElementRow row in _rows.Where(r => !r.HasDycusaParameters))
@@ -564,18 +609,18 @@ internal sealed partial class PartidasForm : Form
 				BudgetItem item = _budget?.Find(code);
 				return code == null ? "Escribe un código (p. ej. 03)."
 					: PartidaCode.Depth(code) != index + 1 ? $"El código {code} no es del nivel {index + 1}."
-					: item != null ? $"✓ {code} {item.Description} (para todos los elementos)"
+					: item != null ? $"✓ {code} {item.Description} para todos los elementos"
 					: _budget == null ? code : $"El código {code} no está en el presupuesto.";
 			}
 			case LinkMode.Parametro:
 				if (string.IsNullOrWhiteSpace(link.ParameterName))
 				{
-					return "Escribe el nombre del parámetro de Revit (o pulsa Detectar).";
+					return "Escribe el nombre del parámetro de regla (o pulsa Detectar).";
 				}
 
-				return _linkExamples.TryGetValue(index + 1, out string example) ? "✓ " + example : "Se comprobará al analizar.";
+				return _linkExamples.TryGetValue(index + 1, out string example) ? "✓ " + example : "Pulsa \"Leer valores\" para ver y ajustar su regla.";
 			default:
-				return "Se toma del código de partida de cada elemento.";
+				return "Sale del código de montaje de cada elemento.";
 		}
 	}
 
@@ -596,6 +641,12 @@ internal sealed partial class PartidasForm : Form
 		}
 		else if (link.Mode == LinkMode.Parametro)
 		{
+			if (link.ParameterName != value)
+			{
+				link.ValueMap.Clear();
+				_linkValues.Remove(rowIndex + 1);
+			}
+
 			link.ParameterName = value;
 		}
 
@@ -603,6 +654,7 @@ internal sealed partial class PartidasForm : Form
 		_filling = true;
 		row.Cells[4].Value = LinkCheck(rowIndex, link);
 		_filling = false;
+		RefreshRules();
 	}
 
 	private void SetSuggestions(List<LinkSuggestion> suggestions)
@@ -616,10 +668,10 @@ internal sealed partial class PartidasForm : Form
 		string text = string.Join("\n", suggestions.Select(s => s.Mode == LinkMode.Fijo
 			? $"Nivel {s.Level}: valor fijo {s.FixedCode} ({s.Example}) para todos los elementos"
 			: $"Nivel {s.Level}: parámetro \"{s.ParameterName}\" ({s.Matches} elementos; p. ej. {s.Example})"));
-		if (MessageBox.Show(this, "Se encontraron estos enlaces:\n\n" + text + "\n\n¿Aplicarlos?", Text, MessageBoxButtons.YesNo,
+		if (MessageBox.Show(this, "Se encontraron estos filtros:\n\n" + text + "\n\n¿Aplicarlos?", Text, MessageBoxButtons.YesNo,
 				MessageBoxIcon.Question) != DialogResult.Yes)
 		{
-			_status.Text = "Enlaces sugeridos sin aplicar.";
+			_status.Text = "Filtros sugeridos sin aplicar.";
 			return;
 		}
 
@@ -634,13 +686,109 @@ internal sealed partial class PartidasForm : Form
 			else
 			{
 				link.ParameterName = suggestion.ParameterName;
-				_linkExamples[suggestion.Level] = $"{suggestion.Matches} elementos con valor que coincide; p. ej. {suggestion.Example}";
+				_linkExamples[suggestion.Level] = $"{suggestion.Matches} valores coinciden; p. ej. {suggestion.Example}";
 			}
 		}
 
 		_config.Save();
 		RefreshLinks();
-		_status.Text = "Enlaces aplicados. Pulsa \"Analizar modelo →\".";
+		Raise(PartidasAction.LinkValues, "Leyendo los valores del modelo…");
+	}
+
+	private void SetLinkValues(Dictionary<int, Dictionary<string, int>> values)
+	{
+		_linkValues = values;
+		Done(values.Count == 0 ? "No hay niveles con \"Parámetro de Revit\" como origen." : $"Valores leídos: {values.Sum(v => v.Value.Count)}.");
+		RefreshRules();
+	}
+
+	/// <summary>Una fila por valor del parámetro de regla: el código que le toca (automático por descripción, elegido o ignorado).</summary>
+	private void RefreshRules()
+	{
+		_filling = true;
+		_rules.Rows.Clear();
+		for (int i = 0; i < _config.Levels; i++)
+		{
+			LevelLink link = _config.Link(i);
+			if (link.Mode != LinkMode.Parametro || string.IsNullOrEmpty(link.ParameterName))
+			{
+				continue;
+			}
+
+			var values = _linkValues.TryGetValue(i + 1, out Dictionary<string, int> found) ? new Dictionary<string, int>(found) : new Dictionary<string, int>();
+			foreach (string ruled in link.ValueMap.Keys.Where(k => !values.Keys.Any(v => BudgetReader.Simplify(v) == k)))
+			{
+				values[ruled] = 0;
+			}
+
+			Dictionary<string, string> auto = LevelMap(i + 1);
+			var options = new List<string> { RuleAuto, RuleIgnore };
+			options.AddRange(_budget?.All.Where(b => b.Depth == i + 1).OrderBy(b => b.Code, StringComparer.Ordinal).Select(b => $"{b.Code}  {b.Description}") ?? Enumerable.Empty<string>());
+			foreach (KeyValuePair<string, int> value in values.OrderByDescending(v => v.Value))
+			{
+				string key = BudgetReader.Simplify(value.Key);
+				string choice = RuleAuto;
+				if (link.ValueMap.TryGetValue(key, out string code))
+				{
+					choice = code.Length == 0 ? RuleIgnore : options.FirstOrDefault(o => o.StartsWith(code + " ", StringComparison.Ordinal)) ?? RuleAuto;
+				}
+
+				int index = _rules.Rows.Add((i + 1).ToString(), link.ParameterName, value.Key, value.Value == 0 ? "—" : value.Value.ToString());
+				var cell = (DataGridViewComboBoxCell)_rules.Rows[index].Cells[4];
+				cell.Items.AddRange(options.ToArray());
+				string autoCode = ElementScanner.MapValue(new LevelLink(), auto, value.Key, out _);
+				cell.Items[0] = autoCode == null ? RuleAuto + ": sin coincidencia" : $"{RuleAuto}: {autoCode} {_budget?.Find(autoCode)?.Description}";
+				cell.Value = choice == RuleAuto ? cell.Items[0] : choice;
+				_rules.Rows[index].Tag = (i, key);
+				if (choice == RuleAuto && autoCode == null)
+				{
+					_rules.Rows[index].DefaultCellStyle.BackColor = Color.FromArgb(255, 225, 190);
+				}
+			}
+		}
+
+		_filling = false;
+	}
+
+	/// <summary>Descripción simplificada (y código) → código, para un nivel del presupuesto.</summary>
+	private Dictionary<string, string> LevelMap(int level)
+	{
+		var map = new Dictionary<string, string>(StringComparer.Ordinal);
+		foreach (BudgetItem item in _budget?.All.Where(b => b.Depth == level) ?? Enumerable.Empty<BudgetItem>())
+		{
+			map[item.Code] = item.Code;
+			string description = BudgetReader.Simplify(item.Description);
+			map[description] = map.TryGetValue(description, out string other) && other != item.Code ? null : item.Code;
+		}
+
+		return map;
+	}
+
+	private void OnRuleEdited(int rowIndex)
+	{
+		if (_filling || rowIndex < 0 || !(_rules.Rows[rowIndex].Tag is ValueTuple<int, string> tag))
+		{
+			return;
+		}
+
+		LevelLink link = _config.Link(tag.Item1);
+		string choice = _rules.Rows[rowIndex].Cells[4].Value as string ?? RuleAuto;
+		if (choice.StartsWith(RuleAuto, StringComparison.Ordinal))
+		{
+			link.ValueMap.Remove(tag.Item2);
+		}
+		else if (choice == RuleIgnore)
+		{
+			link.ValueMap[tag.Item2] = string.Empty;
+		}
+		else
+		{
+			link.ValueMap[tag.Item2] = choice.Split(' ')[0];
+		}
+
+		_config.Save();
+		_rules.Rows[rowIndex].DefaultCellStyle.BackColor = SystemColors.Window;
+		_status.Text = "Regla guardada. Se aplicará al analizar.";
 	}
 
 	#endregion

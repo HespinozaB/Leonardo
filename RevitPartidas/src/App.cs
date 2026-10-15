@@ -29,8 +29,8 @@ public class App : IExternalApplication
 			Assembly.GetExecutingAssembly().Location,
 			"RevitPartidas.Commands.PartidasCommand")
 		{
-			ToolTip = "Compara los códigos de partida del modelo con el presupuesto (Excel) y los unifica en los parámetros " +
-				"DYCUSA_PARTIDA 1 a 6 (un nivel por parámetro). Muestra lo que falta, lo que no cuadra y la cobertura por partida.",
+			ToolTip = "Llena los parámetros de nivel (DYCUSA_PARTIDA 1 a 6) desde el Código de montaje, con la etapa como filtro. " +
+				"Genera los códigos de montaje del presupuesto, sugiere partidas por parámetros o por nombre y muestra la cobertura.",
 			LargeImage = LoadIcon("RevitPartidas.partidas32.b64"),
 			Image = LoadIcon("RevitPartidas.partidas16.b64"),
 			AvailabilityClassName = "RevitPartidas.Commands.PartidasAvailability"

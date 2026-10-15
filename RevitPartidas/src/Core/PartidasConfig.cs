@@ -29,6 +29,20 @@ public sealed class LevelLink
 
 	/// <summary>Para Parámetro: nombre del parámetro de Revit (de ejemplar o de tipo).</summary>
 	public string ParameterName = string.Empty;
+
+	/// <summary>
+	/// Regla del filtro: valor del parámetro (simplificado) → código del nivel ("" = ignorar ese valor). Los valores que no están
+	/// aquí se enlazan solos si coinciden con la descripción o el código de un nivel del presupuesto.
+	/// </summary>
+	public Dictionary<string, string> ValueMap = new Dictionary<string, string>(StringComparer.Ordinal);
+
+	public LevelLink Clone() => new LevelLink
+	{
+		Mode = Mode,
+		FixedCode = FixedCode,
+		ParameterName = ParameterName,
+		ValueMap = new Dictionary<string, string>(ValueMap, StringComparer.Ordinal)
+	};
 }
 
 /// <summary>
@@ -51,10 +65,8 @@ public sealed class PartidasConfig
 	/// <summary>Paso 3: enlace de cada nivel (índice 0 = nivel 1).</summary>
 	public List<LevelLink> Links = new List<LevelLink>();
 
-	/// <summary>Palabras que identifican los parámetros donde ya hay códigos de partida.</summary>
-	public string Keywords = "partida, item";
-
-	public bool PreferSource;
+	/// <summary>El código de montaje manda sobre lo ya escrito en los parámetros de nivel.</summary>
+	public bool PreferSource = true;
 
 	public string[] Names => Enumerable.Range(1, Levels).Select(Name).ToArray();
 
@@ -70,12 +82,10 @@ public sealed class PartidasConfig
 		return Links[index];
 	}
 
-	public IList<string> KeywordList => Keywords.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).Where(k => k.Length > 0).ToList();
-
 	public PartidasConfig Clone()
 	{
 		var copy = (PartidasConfig)MemberwiseClone();
-		copy.Links = Links.Select(l => new LevelLink { Mode = l.Mode, FixedCode = l.FixedCode, ParameterName = l.ParameterName }).ToList();
+		copy.Links = Links.Select(l => l.Clone()).ToList();
 		return copy;
 	}
 
@@ -89,8 +99,7 @@ public sealed class PartidasConfig
 
 		config.Prefix = Settings.Get("prefix") ?? config.Prefix;
 		config.TwoDigits = Settings.Get("twoDigits") == "1";
-		config.Keywords = Settings.Get("keywords") ?? config.Keywords;
-		config.PreferSource = Settings.Get("preferSource") == "1";
+		config.PreferSource = Settings.Get("preferMontaje") != "0";
 		for (int i = 0; i < PartidaCode.MaxLevels; i++)
 		{
 			string value = Settings.Get("link" + (i + 1));
@@ -109,6 +118,16 @@ public sealed class PartidasConfig
 
 			link.FixedCode = parts.Length > 1 ? parts[1] : string.Empty;
 			link.ParameterName = parts.Length > 2 ? parts[2] : string.Empty;
+
+			// Regla: valor=>código separados por ¦
+			foreach (string pair in (Settings.Get("rule" + (i + 1)) ?? string.Empty).Split(new[] { '¦' }, StringSplitOptions.RemoveEmptyEntries))
+			{
+				int arrow = pair.IndexOf("=>", StringComparison.Ordinal);
+				if (arrow > 0)
+				{
+					link.ValueMap[pair.Substring(0, arrow)] = pair.Substring(arrow + 2);
+				}
+			}
 		}
 
 		return config;
@@ -119,12 +138,12 @@ public sealed class PartidasConfig
 		Settings.Set("levels", Levels.ToString(CultureInfo.InvariantCulture));
 		Settings.Set("prefix", Prefix);
 		Settings.Set("twoDigits", TwoDigits ? "1" : "0");
-		Settings.Set("keywords", Keywords);
-		Settings.Set("preferSource", PreferSource ? "1" : "0");
+		Settings.Set("preferMontaje", PreferSource ? "1" : "0");
 		for (int i = 0; i < PartidaCode.MaxLevels; i++)
 		{
 			LevelLink link = i < Links.Count ? Links[i] : new LevelLink();
 			Settings.Set("link" + (i + 1), $"{link.Mode}|{link.FixedCode?.Replace("|", string.Empty)}|{link.ParameterName?.Replace("|", string.Empty)}");
+			Settings.Set("rule" + (i + 1), string.Join("¦", link.ValueMap.Select(p => p.Key.Replace("¦", string.Empty) + "=>" + p.Value)));
 		}
 	}
 }

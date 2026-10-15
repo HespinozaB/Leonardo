@@ -26,14 +26,15 @@ internal sealed partial class PartidasForm
 
 	private static readonly string[] Filters =
 	{
-		"Por revisar (conflictos, no coincide, no está, título, difiere)", "Pendientes de escribir", "Sin partida", "OK", "Todos",
+		"Por revisar (conflictos, sugerencias, no coincide, no está, título, difiere)", "Pendientes de escribir", "Sin partida", "OK", "Todos",
 		"De la partida marcada en el presupuesto", "Selección actual de Revit"
 	};
 
 	private static readonly Dictionary<RowStatus, string> StatusText = new Dictionary<RowStatus, string>
 	{
 		[RowStatus.Conflicto] = "Conflicto",
-		[RowStatus.NoCoincide] = "No coincide con el enlace",
+		[RowStatus.Sugerencia] = "Sugerencia (confirmar)",
+		[RowStatus.NoCoincide] = "No coincide con el filtro",
 		[RowStatus.NoEnPresupuesto] = "No está en el presupuesto",
 		[RowStatus.Titulo] = "Es título",
 		[RowStatus.Difiere] = "Difiere de lo escrito",
@@ -46,6 +47,7 @@ internal sealed partial class PartidasForm
 	private static readonly Dictionary<RowStatus, Color> StatusColor = new Dictionary<RowStatus, Color>
 	{
 		[RowStatus.Conflicto] = Color.FromArgb(255, 205, 205),
+		[RowStatus.Sugerencia] = Color.FromArgb(205, 225, 255),
 		[RowStatus.NoCoincide] = Color.FromArgb(255, 205, 205),
 		[RowStatus.NoEnPresupuesto] = Color.FromArgb(255, 205, 205),
 		[RowStatus.Titulo] = Color.FromArgb(255, 225, 190),
@@ -86,6 +88,9 @@ internal sealed partial class PartidasForm
 
 	// Acciones.
 	private readonly Button _writePending = new Button();
+	private readonly Button _acceptSuggestions = new Button();
+	private readonly Button _link = new Button();
+	private readonly CheckBox _saveMontaje = new CheckBox();
 	private readonly Button _resolve3D = new Button();
 	private readonly Button _clear = new Button();
 	private readonly Button _selectRows = new Button();
@@ -102,7 +107,7 @@ internal sealed partial class PartidasForm
 
 	private TabPage BuildReviewPage()
 	{
-		var page = new TabPage("4 · Revisión");
+		var page = new TabPage("3 · Revisión");
 		var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
 		split.Panel1.Controls.Add(BuildBudgetPanel());
 		split.Panel2.Controls.Add(BuildResultsPanel());
@@ -119,13 +124,21 @@ internal sealed partial class PartidasForm
 
 		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 6, 8, 0), WrapContents = false };
 		Setup(_writePending, "Escribir pendientes", WritePending, bold: true);
+		Setup(_acceptSuggestions, "Aceptar sugerencias", AcceptSuggestions, bold: true);
+		_acceptSuggestions.ForeColor = Color.RoyalBlue;
+		Setup(_link, "Enlazar…", () => OpenLinkDialog(Targets()));
 		Setup(_resolve3D, "Resolver en 3D…", Resolve3D, bold: true);
 		_resolve3D.ForeColor = Color.Firebrick;
 		Setup(_clear, "Vaciar parámetros", ClearTargets);
 		Setup(_selectRows, "Seleccionar en Revit", () => SelectInRevit(Targets().Select(r => r.Id)));
 		Setup(_useRevitSelection, "Usar selección de Revit", () => Raise(PartidasAction.ReadSelection, null));
 		Setup(_export, "Exportar CSV…", ExportCsv);
-		bottom.Controls.AddRange(new Control[] { _writePending, _resolve3D, _clear, _selectRows, _useRevitSelection, _export });
+		_saveMontaje.Text = "Guardar también como Código de montaje del tipo";
+		_saveMontaje.AutoSize = true;
+		_saveMontaje.Checked = Settings.Get("saveMontaje") != "0";
+		_saveMontaje.Margin = new Padding(8, 7, 8, 0);
+		_saveMontaje.CheckedChanged += (s, e) => Settings.Set("saveMontaje", _saveMontaje.Checked ? "1" : "0");
+		bottom.Controls.AddRange(new Control[] { _writePending, _acceptSuggestions, _link, _resolve3D, _saveMontaje, _clear, _selectRows, _useRevitSelection, _export });
 
 		page.Controls.Add(split);
 		page.Controls.Add(bottom);
@@ -228,11 +241,13 @@ internal sealed partial class PartidasForm
 			ShowDetails(e.Node);
 			UpdateButtons();
 		});
+		// Doble clic: enlazar con el presupuesto por código de montaje, nombre o código (grupo o elemento).
 		_results.NodeMouseDoubleClick += (s, e) => Safe(() =>
 		{
-			if (e.Node.Tag is NodeInfo { Row: not null } info)
+			if (e.Node.Tag is NodeInfo info && (info.Row != null || info.Status.HasValue))
 			{
-				SelectInRevit(new[] { info.Row.Id });
+				_results.SelectedNode = e.Node;
+				OpenLinkDialog(info.Rows);
 			}
 		});
 
@@ -278,20 +293,34 @@ internal sealed partial class PartidasForm
 		RefreshAll();
 	}
 
-	private void SetWritten(Dictionary<long, string[]> written, string message)
+	private void SetWritten(Dictionary<long, string[]> written, Dictionary<long, string> types, string message)
 	{
 		Done(message);
 		foreach (ElementRow row in _rows)
 		{
+			bool changed = false;
 			if (written.TryGetValue(row.Id, out string[] values))
 			{
 				row.Current = values;
 				row.HasDycusaParameters = true;
-				row.DycusaCode = PartidaCode.Deepest(values, out bool consistent);
-				row.DycusaInconsistent = !consistent;
-				ElementScanner.Evaluate(row, _budget, _config);
+				changed = true;
+			}
+
+			// Al cambiar el código de montaje de un tipo cambian todos sus elementos.
+			if (types.TryGetValue(row.TypeId, out string code))
+			{
+				row.AssemblyCode = code;
+				row.AssemblyDescription = _budget?.Find(PartidaCode.Normalize(code))?.Description ?? string.Empty;
+				changed = true;
+			}
+
+			if (changed)
+			{
+				Classifier.Classify(row, _budget, _matcher, _config);
 			}
 		}
+
+		ElementScanner.MarkCodedCategories(_rows);
 
 		RefreshAll();
 		if (_resolveForm != null && !_resolveForm.IsDisposed && written.Keys.Any(id => _resolveRows.Any(r => r.Id == id)))
@@ -304,9 +333,10 @@ internal sealed partial class PartidasForm
 	{
 		foreach (ElementRow row in _rows)
 		{
-			ElementScanner.Evaluate(row, _budget, _config);
+			Classifier.Classify(row, _budget, _matcher, _config);
 		}
 
+		ElementScanner.MarkCodedCategories(_rows);
 		RefreshAll();
 	}
 
@@ -405,8 +435,8 @@ internal sealed partial class PartidasForm
 	{
 		if (!_searchKeys.TryGetValue(row.Id, out string key))
 		{
-			key = BudgetReader.Simplify(string.Join(" ", row.Id, row.Category, row.FamilyType, row.Level, row.SourceParam, row.SourceCode,
-				row.ProposedCode, string.Join(" ", row.Candidates), row.Note));
+			key = BudgetReader.Simplify(string.Join(" ", row.Id, row.Category, row.FamilyType, row.Level, row.AssemblyCode, row.AssemblyDescription,
+				row.SourceParam, row.SourceCode, row.ProposedCode, string.Join(" ", row.Candidates), row.Note));
 			_searchKeys[row.Id] = key;
 		}
 
@@ -425,15 +455,23 @@ internal sealed partial class PartidasForm
 		switch (row.Status)
 		{
 			case RowStatus.Conflicto:
-				return "Conflicto · " + string.Join("  /  ", row.Candidates.Select(Describe));
+				return (row.Suggestions.Any(x => x.ByCode) ? "Conflicto (códigos en parámetros) · " : "Conflicto (por nombre) · ") +
+					string.Join("  /  ", row.Candidates.Select(Describe));
+			case RowStatus.Sugerencia:
+			{
+				Suggestion best = row.Suggestions.FirstOrDefault(x => x.Code == row.Candidates.FirstOrDefault());
+				return best == null ? "Sugerencia" : best.ByCode
+					? $"Sugerencia · {Describe(best.Code)} (código en {best.Source})"
+					: $"Sugerencia {best.Score:P0} · {Describe(best.Code)} (por {best.Source})";
+			}
 			case RowStatus.NoCoincide:
 				return $"No coincide con {LinkText(row)} · " + string.Join(" / ", row.Candidates.Count > 0 ? row.Candidates : new List<string> { row.ProposedCode });
 			case RowStatus.NoEnPresupuesto:
-				return "No está en el presupuesto · " + row.ProposedCode;
+				return "No está en el presupuesto · montaje " + (row.ProposedCode ?? row.AssemblyCode);
 			case RowStatus.Titulo:
-				return "Es título · " + Describe(row.ProposedCode);
+				return "Es título · " + Describe(row.ProposedCode ?? PartidaCode.Normalize(row.AssemblyCode));
 			case RowStatus.Difiere:
-				return $"Difiere · origen {row.SourceCode} ≠ escrito {row.DycusaCode}";
+				return $"Difiere · montaje {row.SourceCode} ≠ escrito {row.DycusaCode}";
 			case RowStatus.Pendiente:
 				return "Pendiente · " + Describe(row.ProposedCode);
 			case RowStatus.Parcial:
@@ -456,7 +494,7 @@ internal sealed partial class PartidasForm
 			}
 		}
 
-		return parts.Count == 0 ? "el enlace" : string.Join(" / ", parts);
+		return parts.Count == 0 ? "el filtro" : string.Join(" / ", parts);
 	}
 
 	private static string Shorten(string text, int length) =>
@@ -638,14 +676,23 @@ internal sealed partial class PartidasForm
 			ElementRow row = info.Row;
 			text.AppendLine($"Elemento {row.Id} · {row.Category} · {row.FamilyType} · {row.Level}");
 			text.AppendLine($"Estado: {StatusText[row.Status]}");
-			if (row.SourceCode != null)
+			text.AppendLine($"Código de montaje: {(row.AssemblyCode.Length > 0 ? row.AssemblyCode : "(vacío)")}   Descripción de montaje: {row.AssemblyDescription}");
+			string filter = string.Join(", ", Enumerable.Range(0, row.LinkValues?.Length ?? 0).Where(i => row.LinkValues[i].Length > 0)
+				.Select(i => $"{_config.Link(i).ParameterName} = {row.LinkValues[i]}" + (row.Linked[i].Length > 0 ? $" → {row.Linked[i]}" : " (sin regla)")));
+			if (filter.Length > 0)
 			{
-				text.AppendLine($"Origen: {row.SourceCode}  ({row.SourceParam})");
+				text.AppendLine("Filtro: " + filter);
 			}
 
-			if (row.Candidates.Count > 0)
+			if (row.SourceCode != null)
 			{
-				text.AppendLine("Opciones: " + string.Join("  |  ", row.Candidates.Select(Describe)) + $"  ({row.SourceParam})");
+				text.AppendLine($"Partida: {Describe(row.SourceCode)}  ({row.SourceParam})");
+			}
+
+			foreach (Suggestion suggestion in row.Suggestions)
+			{
+				text.AppendLine($"  Sugerencia: {Describe(suggestion.Code)}  — " +
+					(suggestion.ByCode ? $"código en {suggestion.Source}" : $"{suggestion.Score:P0} por {suggestion.Source}"));
 			}
 
 			string[] names = _config.Names;
@@ -673,11 +720,19 @@ internal sealed partial class PartidasForm
 				text.AppendLine("  · " + Describe(candidate));
 			}
 
-			string sources = string.Join(", ", info.Rows.Select(r => r.SourceParam).Where(s => !string.IsNullOrEmpty(s)).Distinct().Take(6));
+			string montajes = string.Join(", ", info.Rows.Select(r => r.AssemblyCode).Where(c => c.Length > 0).Distinct().Take(6));
+			if (montajes.Length > 0)
+			{
+				text.AppendLine("Códigos de montaje: " + montajes);
+			}
+
+			string sources = string.Join(", ", info.Rows.SelectMany(r => r.Suggestions).Select(x => x.Source).Distinct().Take(6));
 			if (sources.Length > 0)
 			{
-				text.AppendLine("Parámetros de origen: " + sources);
+				text.AppendLine("Sugerido por: " + sources);
 			}
+
+			text.AppendLine("Doble clic para enlazar con el presupuesto.");
 
 			string note = info.Rows.Select(r => r.Note).FirstOrDefault(n => !string.IsNullOrEmpty(n));
 			if (note != null)
@@ -708,21 +763,23 @@ internal sealed partial class PartidasForm
 		switch (status)
 		{
 			case RowStatus.Conflicto:
-				return "El elemento tiene varias partidas posibles. Pulsa \"Resolver en 3D…\" para verlas pintadas y elegir con un clic.";
+				return "Varias partidas posibles. Doble clic para elegir, o \"Resolver en 3D…\" para verlas pintadas y elegir con un clic.";
+			case RowStatus.Sugerencia:
+				return "Sin código de montaje, pero un parámetro o el nombre apunta a esta partida. Confírmala con \"Aceptar sugerencias\" o cámbiala con doble clic.";
 			case RowStatus.NoCoincide:
-				return "Su código no corresponde al nivel enlazado (p. ej. código de ETAPA 2 en un elemento de ETAPA 1). Marca la partida correcta en el presupuesto y pulsa \"Asignar\", o resuélvelo en 3D.";
+				return "Su código es de otra rama que la del filtro (p. ej. ETAPA 2 en un elemento de ETAPA 1) y no tiene equivalente con la misma descripción. Doble clic para enlazar la correcta.";
 			case RowStatus.NoEnPresupuesto:
-				return "El código no existe en el presupuesto: marca la partida correcta a la izquierda y pulsa \"Asignar\".";
+				return "El código de montaje no existe en el presupuesto. Doble clic para enlazar la partida correcta.";
 			case RowStatus.Titulo:
-				return "El código es un título: asigna la partida final correcta desde el presupuesto.";
+				return "El código de montaje es un título. Doble clic para elegir la partida final (se sugieren las de ese título por nombre).";
 			case RowStatus.Difiere:
-				return "Lo escrito y el parámetro de origen no coinciden. Activa en el paso 3 \"Los parámetros de origen mandan\" o asigna la correcta.";
+				return "Lo escrito en los niveles y el código de montaje no coinciden. En el paso 2 eliges cuál manda, o enlaza la correcta con doble clic.";
 			case RowStatus.Pendiente:
 				return "Listo para escribir: pulsa \"Escribir pendientes\".";
 			case RowStatus.Parcial:
-				return "Sin partida, pero los enlaces dan los niveles superiores: \"Escribir pendientes\" los escribe; la partida final se asigna desde el presupuesto.";
+				return "Sin partida, pero el filtro da los niveles superiores: \"Escribir pendientes\" los escribe; la partida final se enlaza con doble clic.";
 			case RowStatus.SinPartida:
-				return "Ningún parámetro tiene código: marca la partida a la izquierda y pulsa \"Asignar\".";
+				return "Nada apunta a una partida (ni código de montaje, ni parámetros, ni nombre). Doble clic para enlazarla.";
 			default:
 				return "Completo y coherente con el presupuesto.";
 		}
@@ -731,7 +788,7 @@ internal sealed partial class PartidasForm
 	private void UpdateButtons()
 	{
 		bool idle = !_busy;
-		foreach (Control control in new Control[] { _loadBudget, _createParams, _suggest, _analyze, _rescan, _writePending, _clear, _selectRows, _useRevitSelection, _export })
+		foreach (Control control in new Control[] { _loadBudget, _createParams, _loadMontaje, _suggest, _readValues, _analyze, _rescan, _writePending, _clear, _selectRows, _useRevitSelection, _export })
 		{
 			control.Enabled = idle;
 		}
@@ -740,6 +797,10 @@ internal sealed partial class PartidasForm
 		_assign.Enabled = idle && hasTarget && _budgetTree.SelectedNode != null;
 		_selectNode.Enabled = idle && _budgetTree.SelectedNode != null;
 		_resolve3D.Enabled = idle && hasTarget;
+		_link.Enabled = idle && hasTarget;
+		int suggestions = _rows.Count(r => r.Status == RowStatus.Sugerencia);
+		_acceptSuggestions.Enabled = idle && suggestions > 0;
+		_acceptSuggestions.Text = $"Aceptar sugerencias ({suggestions})";
 		int pending = _rows.Count(r => r.Status == RowStatus.Pendiente || r.Status == RowStatus.Parcial);
 		_writePending.Text = $"Escribir pendientes ({pending})";
 	}

@@ -13,6 +13,8 @@ internal enum PartidasAction
 {
 	Scan,
 	SuggestLinks,
+	LinkValues,
+	LoadAssemblyCodes,
 	ParameterStatus,
 	CreateParameters,
 	Write,
@@ -35,6 +37,9 @@ internal sealed class PartidasHandler : IExternalEventHandler
 	/// <summary>Para Write: elemento → valores de los niveles (null = vaciar).</summary>
 	public Dictionary<long, string[]> Assignments = new Dictionary<long, string[]>();
 
+	/// <summary>Para Write: tipo → nuevo Código de montaje.</summary>
+	public Dictionary<long, string> TypeCodes = new Dictionary<long, string>();
+
 	/// <summary>Para Select y para los elementos en conflicto de Show3D.</summary>
 	public List<long> Ids = new List<long>();
 
@@ -48,8 +53,10 @@ internal sealed class PartidasHandler : IExternalEventHandler
 
 	public Action<ScanResult, string, string> OnScan;
 
-	/// <summary>Elementos escritos (para actualizar la lista sin volver a analizar todo el modelo) y mensaje.</summary>
-	public Action<Dictionary<long, string[]>, string> OnWritten;
+	/// <summary>Elementos escritos y tipos con nuevo código de montaje (para actualizar la lista sin volver a analizar) y mensaje.</summary>
+	public Action<Dictionary<long, string[]>, Dictionary<long, string>, string> OnWritten;
+
+	public Action<Dictionary<int, Dictionary<string, int>>> OnLinkValues;
 
 	public Action<List<long>> OnSelection;
 
@@ -83,6 +90,15 @@ internal sealed class PartidasHandler : IExternalEventHandler
 				case PartidasAction.SuggestLinks:
 					OnSuggestions?.Invoke(ElementScanner.SuggestLinks(doc, Budget, Config));
 					break;
+				case PartidasAction.LinkValues:
+					OnLinkValues?.Invoke(ElementScanner.LinkValueCounts(doc, Config));
+					break;
+				case PartidasAction.LoadAssemblyCodes:
+				{
+					string path = AssemblyCodes.WriteFile(Budget, Config.Levels);
+					OnMessage?.Invoke(Run(doc, "EMASY: cargar códigos de montaje", () => AssemblyCodes.Load(doc, path)));
+					break;
+				}
 				case PartidasAction.ParameterStatus:
 					OnParameterStatus?.Invoke(SharedParams.FindBound(doc, Config.Names).Select(d => d != null).ToArray(), null);
 					break;
@@ -142,9 +158,31 @@ internal sealed class PartidasHandler : IExternalEventHandler
 		var written = new Dictionary<long, string[]>();
 		int missing = 0;
 		int failed = 0;
+		var typesWritten = new Dictionary<long, string>();
+		int typesFailed = 0;
 		using (var transaction = new Transaction(doc, "EMASY: escribir partidas"))
 		{
 			transaction.Start();
+			foreach (KeyValuePair<long, string> typeCode in TypeCodes)
+			{
+				Parameter parameter = AssemblyCodes.CodeParameter(doc.GetElement(new ElementId(typeCode.Key)));
+				try
+				{
+					if (parameter != null && !parameter.IsReadOnly && parameter.Set(typeCode.Value ?? string.Empty))
+					{
+						typesWritten[typeCode.Key] = typeCode.Value ?? string.Empty;
+					}
+					else
+					{
+						typesFailed++;
+					}
+				}
+				catch (Exception)
+				{
+					typesFailed++;
+				}
+			}
+
 			foreach (KeyValuePair<long, string[]> assignment in Assignments)
 			{
 				Element element = doc.GetElement(new ElementId(assignment.Key));
@@ -196,7 +234,12 @@ internal sealed class PartidasHandler : IExternalEventHandler
 			}
 		}
 
-		string text = $"{written.Count} elemento(s) actualizado(s).";
+		string text = $"{written.Count} elemento(s) actualizado(s)." + (TypeCodes.Count > 0 ? $" Código de montaje en {typesWritten.Count} tipo(s)." : string.Empty);
+		if (typesFailed > 0)
+		{
+			text += $" {typesFailed} tipo(s) sin código de montaje editable.";
+		}
+
 		if (missing > 0)
 		{
 			text += $" {missing} sin los parámetros (créalos en el paso 2).";
@@ -213,7 +256,8 @@ internal sealed class PartidasHandler : IExternalEventHandler
 			Review3D.Reset(doc);
 		}
 
-		OnWritten?.Invoke(written, text);
+		TypeCodes = new Dictionary<long, string>();
+		OnWritten?.Invoke(written, typesWritten, text);
 	}
 
 	private void Select(UIDocument uiDoc)

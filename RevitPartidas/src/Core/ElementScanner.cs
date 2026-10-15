@@ -5,209 +5,45 @@ using Autodesk.Revit.DB;
 
 namespace RevitPartidas.Core;
 
-/// <summary>Estado de un elemento frente al presupuesto (de más grave a menos grave).</summary>
-public enum RowStatus
-{
-	/// <summary>Tiene varias partidas finales posibles: la decide el usuario.</summary>
-	Conflicto,
-
-	/// <summary>Su código no corresponde al nivel enlazado (p. ej. código de ETAPA 2 en un elemento de ETAPA 1).</summary>
-	NoCoincide,
-
-	/// <summary>El código no existe en el presupuesto.</summary>
-	NoEnPresupuesto,
-
-	/// <summary>El código es un título (no se metra), no una partida final.</summary>
-	Titulo,
-
-	/// <summary>Ya tiene los parámetros de nivel escritos, pero el origen dice otra partida.</summary>
-	Difiere,
-
-	/// <summary>Falta escribir (o completar) la partida propuesta.</summary>
-	Pendiente,
-
-	/// <summary>Sin partida, pero los enlaces dan los niveles superiores (p. ej. 03 / 03.01): se pueden escribir ya.</summary>
-	Parcial,
-
-	/// <summary>Ningún parámetro tiene un código de partida.</summary>
-	SinPartida,
-
-	/// <summary>Los niveles están escritos y la partida existe en el presupuesto.</summary>
-	Ok
-}
-
-/// <summary>Un elemento del modelo con sus códigos de origen, los niveles actuales y la propuesta.</summary>
-public sealed class ElementRow
-{
-	public long Id;
-
-	public string Category;
-
-	public string FamilyType;
-
-	public string Level;
-
-	/// <summary>Código más profundo leído de los parámetros de origen (null si no hay o hay conflicto).</summary>
-	public string SourceCode;
-
-	/// <summary>Dónde se leyó (p. ej. "DOC_N° PARTIDA 1 (tipo)").</summary>
-	public string SourceParam;
-
-	/// <summary>Las opciones cuando hay conflicto (o los códigos que no coinciden con el enlace).</summary>
-	public List<string> Candidates = new List<string>();
-
-	public bool SourceConflict;
-
-	public bool LinkMismatch;
-
-	/// <summary>Algún nivel salió de un parámetro de Revit del elemento (p. ej. su ETAPA), no solo de un valor fijo.</summary>
-	public bool HasParameterLink;
-
-	/// <summary>Código de cada nivel según los enlaces (fijo o parámetro de Revit); "" si el nivel se deriva del código.</summary>
-	public string[] Linked;
-
-	/// <summary>Valores actuales de los parámetros de nivel ("" si vacío; null si el elemento no tiene el parámetro).</summary>
-	public string[] Current;
-
-	/// <summary>Código más profundo escrito hoy en los parámetros de nivel.</summary>
-	public string DycusaCode;
-
-	public bool DycusaInconsistent;
-
-	public string ProposedCode;
-
-	public string[] Proposed;
-
-	public RowStatus Status;
-
-	public string Note;
-
-	public bool HasDycusaParameters;
-
-	/// <summary>Su categoría tiene elementos con partida (los "sin partida" de otras categorías no se muestran salvo en la selección).</summary>
-	public bool InCodedCategory = true;
-
-	public double Area;
-
-	public double Length;
-
-	public double Volume;
-
-	public bool IsUpToDate => HasDycusaParameters && Current.Select(v => v ?? string.Empty).SequenceEqual(Proposed);
-
-	/// <summary>Cadena de niveles enlazados contiguos desde el nivel 1 (p. ej. "03.01"), o null.</summary>
-	public string LinkedChain
-	{
-		get
-		{
-			string chain = null;
-			foreach (string code in Linked ?? Array.Empty<string>())
-			{
-				if (string.IsNullOrEmpty(code) || (chain != null && !PartidaCode.IsAncestorOrSelf(chain, code)))
-				{
-					break;
-				}
-
-				chain = code;
-			}
-
-			return chain;
-		}
-	}
-}
-
-public sealed class ScanResult
-{
-	public readonly List<ElementRow> Rows = new List<ElementRow>();
-
-	public int ParametersBound;
-
-	public readonly List<string> Notes = new List<string>();
-
-	public TimeSpan Elapsed;
-}
-
-/// <summary>Sugerencia del paso 3: un parámetro cuyo valor coincide con las descripciones de un nivel.</summary>
-public sealed class LinkSuggestion
-{
-	public int Level;
-
-	public LinkMode Mode;
-
-	public string ParameterName;
-
-	public string FixedCode;
-
-	public int Matches;
-
-	public string Example;
-}
-
 /// <summary>
-/// Recorre los elementos de modelo y busca códigos de partida en los parámetros de origen: primero los de ejemplar; si no
-/// resuelven, los de tipo; y si tampoco, los de sus materiales. Con el presupuesto y los enlaces propone los niveles.
+/// Lee del modelo lo que necesita <see cref="Classifier"/>: el Código y la Descripción de montaje del tipo, los parámetros del
+/// filtro (p. ej. la etapa) y, para los que no tienen código de montaje, todos los parámetros de texto de ejemplar y de tipo
+/// (códigos del presupuesto y textos para comparar por nombre).
 /// </summary>
 public static class ElementScanner
 {
-	/// <summary>Nombres que contienen estas palabras no son de origen (descripciones, unidades, códigos OE…).</summary>
-	private static readonly string[] Excluded = { "dycusa", "nom", "unidad", "alterno", "descrip" };
-
-	private sealed class Shape
+	private sealed class TypeInfo
 	{
-		/// <summary>Parámetros de ejemplar de origen (de texto) que tienen los elementos de esta forma.</summary>
-		public List<string> InstanceSources;
-
-		public List<(string Code, string Name)> TypeCodes;
-
-		public List<(string Code, string Name)> MaterialCodes;
-
 		public string FamilyType;
+
+		public string AssemblyCode = string.Empty;
+
+		public string AssemblyDescription = string.Empty;
+
+		public List<(string Code, string Source)> CodeHits;
+
+		public List<(string Text, string Source)> Texts;
 	}
 
-	public static ScanResult Run(Document doc, Budget budget, PartidasConfig config, ICollection<long> onlyIds = null)
+	public static ScanResult Run(Document doc, Budget budget, PartidasConfig config)
 	{
 		DateTime start = DateTime.Now;
 		string[] names = config.Names;
 		Guid[] guids = names.Select(SharedParams.GuidFor).ToArray();
+		var skip = new HashSet<string>(names, StringComparer.Ordinal);
+		foreach (LevelLink link in config.Links.Where(l => l.Mode == LinkMode.Parametro && !string.IsNullOrEmpty(l.ParameterName)))
+		{
+			skip.Add(link.ParameterName);
+		}
+
 		var result = new ScanResult { ParametersBound = SharedParams.CountBound(doc, names) };
-		string[] words = config.KeywordList.Select(BudgetReader.Simplify).Where(k => k.Length > 0).ToArray();
-		var nameCache = new Dictionary<string, bool>(StringComparer.Ordinal);
-		var shapes = new Dictionary<long, Shape>();
+		var matcher = budget == null ? null : new BudgetMatcher(budget);
+		var types = new Dictionary<long, TypeInfo>();
 		var typeValues = new Dictionary<(long, string), string>();
 		var levelNames = new Dictionary<long, string>();
 		var linkMaps = BuildLinkMaps(budget, config);
 
-		bool IsSource(string name)
-		{
-			if (!nameCache.TryGetValue(name, out bool isSource))
-			{
-				string simple = BudgetReader.Simplify(name);
-				isSource = words.Any(w => simple.Contains(w)) && !Excluded.Any(x => simple.Contains(x)) && !names.Contains(name);
-				nameCache[name] = isSource;
-			}
-
-			return isSource;
-		}
-
-		List<(string Code, string Name)> AllCodes(Element element, string where)
-		{
-			var codes = new List<(string, string)>();
-			foreach (Parameter parameter in element.Parameters)
-			{
-				if (parameter.StorageType == StorageType.String && parameter.HasValue && parameter.Definition != null &&
-					IsSource(parameter.Definition.Name))
-				{
-					AddCode(codes, parameter.AsString(), parameter.Definition.Name + where);
-				}
-			}
-
-			return codes;
-		}
-
-		IEnumerable<Element> elements = onlyIds == null
-			? new FilteredElementCollector(doc).WhereElementIsNotElementType()
-			: onlyIds.Select(id => doc.GetElement(new ElementId(id))).Where(e => e != null);
-		foreach (Element element in elements)
+		foreach (Element element in new FilteredElementCollector(doc).WhereElementIsNotElementType())
 		{
 			Category category = element.Category;
 			if (category == null || category.CategoryType != CategoryType.Model || !category.AllowsBoundParameters ||
@@ -216,90 +52,151 @@ public static class ElementScanner
 				continue;
 			}
 
-			// Los elementos del mismo tipo comparten los mismos parámetros: se analizan una vez por tipo.
 			ElementId typeId = element.GetTypeId();
-			long shapeKey = typeId != ElementId.InvalidElementId ? typeId.Value : -category.Id.Value;
-			if (!shapes.TryGetValue(shapeKey, out Shape shape))
+			TypeInfo type = null;
+			if (typeId != ElementId.InvalidElementId && !types.TryGetValue(typeId.Value, out type))
 			{
-				shape = new Shape
+				Element typeElement = doc.GetElement(typeId);
+				type = new TypeInfo
 				{
-					InstanceSources = element.Parameters.Cast<Parameter>()
-						.Where(p => p.StorageType == StorageType.String && p.Definition != null && IsSource(p.Definition.Name))
-						.Select(p => p.Definition.Name).Distinct().ToList()
+					FamilyType = typeElement is ElementType elementType ? elementType.FamilyName + " : " + elementType.Name : element.Name,
+					AssemblyCode = AssemblyCodes.Code(typeElement),
+					AssemblyDescription = AssemblyCodes.Description(typeElement)
 				};
-				Element type = typeId != ElementId.InvalidElementId ? doc.GetElement(typeId) : null;
-				shape.TypeCodes = type == null ? new List<(string, string)>() : AllCodes(type, " (tipo)");
-				shape.FamilyType = type is ElementType elementType ? elementType.FamilyName + " : " + elementType.Name : element.Name;
-				shapes[shapeKey] = shape;
+				types[typeId.Value] = type;
 			}
 
 			var row = new ElementRow
 			{
 				Id = element.Id.Value,
+				TypeId = typeId != ElementId.InvalidElementId ? typeId.Value : -1,
 				Category = category.Name,
-				FamilyType = typeId != ElementId.InvalidElementId ? shape.FamilyType : element.Name,
-				Level = LevelName(doc, element, levelNames)
+				FamilyType = type?.FamilyType ?? element.Name,
+				Level = LevelName(doc, element, levelNames),
+				AssemblyCode = type?.AssemblyCode ?? string.Empty,
+				AssemblyDescription = type?.AssemblyDescription ?? string.Empty
 			};
 
 			ReadCurrent(element, row, names, guids);
+			ReadLinks(doc, element, typeId, config, linkMaps, typeValues, row);
 
-			var instanceCodes = new List<(string Code, string Name)>();
-			foreach (string name in shape.InstanceSources)
+			// Sin un código de montaje válido para su rama, se leen todos sus parámetros (lo más lento, solo cuando hace falta).
+			if (!MontajeResolves(row, budget, matcher))
 			{
-				Parameter parameter = element.LookupParameter(name);
-				if (parameter != null && parameter.StorageType == StorageType.String && parameter.HasValue)
+				if (type != null && type.CodeHits == null)
 				{
-					AddCode(instanceCodes, parameter.AsString(), name);
-				}
-			}
-
-			row.Linked = ReadLinks(doc, element, typeId, config, linkMaps, typeValues, row);
-
-			// Los materiales solo se consultan si el elemento y su tipo no tienen nada (es lo más lento).
-			List<(string Code, string Name)> materialCodes = null;
-			if (instanceCodes.Count == 0 && shape.TypeCodes.Count == 0)
-			{
-				if (shape.MaterialCodes == null)
-				{
-					shape.MaterialCodes = new List<(string, string)>();
-					foreach (ElementId materialId in SafeMaterials(element))
+					Element typeElement = doc.GetElement(typeId);
+					type.CodeHits = new List<(string, string)>();
+					type.Texts = new List<(string, string)>();
+					if (typeElement is ElementType elementType)
 					{
-						Element material = doc.GetElement(materialId);
-						if (material != null)
-						{
-							shape.MaterialCodes.AddRange(AllCodes(material, " (material " + material.Name + ")"));
-						}
+						AddText(type.Texts, elementType.FamilyName, "Familia");
+						AddText(type.Texts, elementType.Name, "Tipo");
+						AddText(type.Texts, elementType.FamilyName + " " + elementType.Name, "Familia : Tipo");
 					}
+
+					ReadParameters(typeElement, " (tipo)", skip, budget, type.CodeHits, type.Texts);
 				}
 
-				materialCodes = shape.MaterialCodes;
+				ReadParameters(element, string.Empty, skip, budget, row.CodeHits, row.Texts);
+				if (type != null)
+				{
+					row.CodeHits.AddRange(type.CodeHits);
+					row.Texts.AddRange(type.Texts);
+				}
+				else
+				{
+					AddText(row.Texts, element.Name, "Nombre");
+				}
 			}
 
-			Resolve(row, budget, instanceCodes, shape.TypeCodes, materialCodes);
-			Evaluate(row, budget, config);
+			Classifier.Classify(row, budget, matcher, config);
 			ReadQuantities(element, row);
 			result.Rows.Add(row);
 		}
 
-		// "Sin partida" solo interesa en las categorías que sí se están codificando (no en todo el modelo).
-		var coded = new HashSet<string>(result.Rows.Where(r => r.Status != RowStatus.SinPartida && r.Status != RowStatus.Parcial).Select(r => r.Category));
-		foreach (ElementRow row in result.Rows)
-		{
-			row.InCodedCategory = coded.Contains(row.Category);
-		}
-
+		MarkCodedCategories(result.Rows);
 		result.Elapsed = DateTime.Now - start;
 		return result;
 	}
 
-	private static void AddCode(List<(string Code, string Name)> codes, string value, string name)
+	/// <summary>"Sin partida" solo interesa en las categorías que sí se están codificando (no en todo el modelo).</summary>
+	public static void MarkCodedCategories(List<ElementRow> rows)
 	{
-		// Un solo nivel ("62", "03") no identifica una partida: suele ser otro dato en un parámetro "ITEM".
-		string code = PartidaCode.Normalize(value);
-		if (code != null && PartidaCode.Depth(code) >= 2)
+		var coded = new HashSet<string>(rows.Where(r => r.Status != RowStatus.SinPartida && r.Status != RowStatus.Parcial).Select(r => r.Category));
+		foreach (ElementRow row in rows)
 		{
-			codes.Add((code, name));
+			row.InCodedCategory = coded.Contains(row.Category);
 		}
+	}
+
+	private static bool MontajeResolves(ElementRow row, Budget budget, BudgetMatcher matcher)
+	{
+		string code = PartidaCode.Normalize(row.AssemblyCode);
+		BudgetItem item = code == null ? null : budget?.Find(code);
+		if (code == null || (budget != null && (item == null || !item.IsLeaf)))
+		{
+			return false;
+		}
+
+		return Classifier.MatchesLinks(code, row.Linked) ||
+			matcher?.Equivalent(code, row.LinkedChain ?? row.Linked?.LastOrDefault(l => !string.IsNullOrEmpty(l))) != null;
+	}
+
+	/// <summary>Todos los parámetros de texto: los valores que son códigos del presupuesto y los textos con letras.</summary>
+	private static void ReadParameters(Element element, string where, HashSet<string> skip, Budget budget,
+		List<(string Code, string Source)> codes, List<(string Text, string Source)> texts)
+	{
+		if (element == null)
+		{
+			return;
+		}
+
+		foreach (Parameter parameter in element.Parameters)
+		{
+			if (parameter.StorageType != StorageType.String || !parameter.HasValue || parameter.Definition == null ||
+				skip.Contains(parameter.Definition.Name))
+			{
+				continue;
+			}
+
+			if (parameter.Definition is InternalDefinition internalDefinition &&
+				(internalDefinition.BuiltInParameter == BuiltInParameter.UNIFORMAT_CODE || internalDefinition.BuiltInParameter == BuiltInParameter.UNIFORMAT_DESCRIPTION))
+			{
+				continue;
+			}
+
+			string value = parameter.AsString();
+			if (string.IsNullOrWhiteSpace(value))
+			{
+				continue;
+			}
+
+			string source = parameter.Definition.Name + where;
+			string code = PartidaCode.Normalize(value);
+			if (code != null)
+			{
+				// Códigos de al menos 3 niveles que existen en el presupuesto (un "03.01" o un "62" sueltos no dicen la partida).
+				if (PartidaCode.Depth(code) >= 3 && (budget == null || budget.Find(code) != null))
+				{
+					codes.Add((code, source));
+				}
+			}
+			else
+			{
+				AddText(texts, value, source);
+			}
+		}
+	}
+
+	private static void AddText(List<(string Text, string Source)> texts, string value, string source)
+	{
+		if (string.IsNullOrWhiteSpace(value) || value.Length < 4 || value.Length > 250 || !value.Any(char.IsLetter))
+		{
+			return;
+		}
+
+		texts.Add((value.Trim(), source));
 	}
 
 	private static void ReadCurrent(Element element, ElementRow row, string[] names, Guid[] guids)
@@ -307,8 +204,6 @@ public static class ElementScanner
 		Parameter[] parameters = SharedParams.Get(element, names, guids);
 		row.HasDycusaParameters = parameters.All(p => p != null);
 		row.Current = parameters.Select(p => p == null ? null : (p.AsString() ?? string.Empty).Trim()).ToArray();
-		row.DycusaCode = PartidaCode.Deepest(row.Current.Select(v => v ?? string.Empty).ToList(), out bool consistent);
-		row.DycusaInconsistent = !consistent;
 	}
 
 	/// <summary>Por nivel: descripción simplificada (y código) → código del presupuesto.</summary>
@@ -325,14 +220,7 @@ public static class ElementScanner
 					map[item.Code] = item.Code;
 					string description = BudgetReader.Simplify(item.Description);
 					// Si dos partidas del nivel tienen la misma descripción, no sirve para enlazar.
-					if (map.TryGetValue(description, out string other) && other != item.Code)
-					{
-						map[description] = null;
-					}
-					else
-					{
-						map[description] = item.Code;
-					}
+					map[description] = map.TryGetValue(description, out string other) && other != item.Code ? null : item.Code;
 				}
 			}
 
@@ -342,47 +230,75 @@ public static class ElementScanner
 		return maps;
 	}
 
-	private static string[] ReadLinks(Document doc, Element element, ElementId typeId, PartidasConfig config,
+	/// <summary>El código del nivel para un valor del parámetro del filtro: primero la regla del usuario, luego la descripción.</summary>
+	public static string MapValue(LevelLink link, Dictionary<string, string> map, string value, out bool ruled)
+	{
+		ruled = false;
+		string key = BudgetReader.Simplify(value);
+		if (link.ValueMap.TryGetValue(key, out string chosen))
+		{
+			ruled = true;
+			return PartidaCode.Normalize(chosen) ?? string.Empty;
+		}
+
+		string lookup = PartidaCode.Normalize(value) ?? key;
+		return map != null && map.TryGetValue(lookup, out string code) && code != null ? code : null;
+	}
+
+	private static void ReadLinks(Document doc, Element element, ElementId typeId, PartidasConfig config,
 		Dictionary<string, string>[] maps, Dictionary<(long, string), string> typeValues, ElementRow row)
 	{
-		var linked = new string[config.Levels];
+		row.Linked = new string[config.Levels];
+		row.LinkValues = new string[config.Levels];
 		for (int i = 0; i < config.Levels; i++)
 		{
-			linked[i] = string.Empty;
+			row.Linked[i] = string.Empty;
+			row.LinkValues[i] = string.Empty;
 			LevelLink link = config.Link(i);
 			if (link.Mode == LinkMode.Fijo)
 			{
-				linked[i] = PartidaCode.Normalize(link.FixedCode) ?? string.Empty;
+				row.Linked[i] = PartidaCode.Normalize(link.FixedCode) ?? string.Empty;
+				continue;
 			}
-			else if (link.Mode == LinkMode.Parametro && !string.IsNullOrEmpty(link.ParameterName))
-			{
-				string value = Text(element.LookupParameter(link.ParameterName));
-				if (value == null && typeId != ElementId.InvalidElementId)
-				{
-					if (!typeValues.TryGetValue((typeId.Value, link.ParameterName), out value))
-					{
-						value = Text(doc.GetElement(typeId)?.LookupParameter(link.ParameterName));
-						typeValues[(typeId.Value, link.ParameterName)] = value;
-					}
-				}
 
-				if (!string.IsNullOrWhiteSpace(value))
-				{
-					string key = PartidaCode.Normalize(value) ?? BudgetReader.Simplify(value);
-					if (maps[i].TryGetValue(key, out string code) && code != null)
-					{
-						linked[i] = code;
-						row.HasParameterLink = true;
-					}
-					else
-					{
-						AppendNote(row, $"{link.ParameterName} = \"{value.Trim()}\" no coincide con ningún nivel {i + 1} del presupuesto.");
-					}
-				}
+			if (link.Mode != LinkMode.Parametro || string.IsNullOrEmpty(link.ParameterName))
+			{
+				continue;
+			}
+
+			string value = LinkValue(doc, element, typeId, link.ParameterName, typeValues);
+			if (string.IsNullOrWhiteSpace(value))
+			{
+				continue;
+			}
+
+			row.LinkValues[i] = value.Trim();
+			string code = MapValue(link, maps[i], value, out bool ruled);
+			if (code == null)
+			{
+				row.AppendNote($"{link.ParameterName} = \"{value.Trim()}\" no tiene regla en el filtro del nivel {i + 1}.");
+			}
+			else if (code.Length > 0)
+			{
+				row.Linked[i] = code;
+				row.HasParameterLink = true;
+			}
+		}
+	}
+
+	private static string LinkValue(Document doc, Element element, ElementId typeId, string name, Dictionary<(long, string), string> typeValues)
+	{
+		string value = Text(element.LookupParameter(name));
+		if (value == null && typeId != ElementId.InvalidElementId)
+		{
+			if (!typeValues.TryGetValue((typeId.Value, name), out value))
+			{
+				value = Text(doc.GetElement(typeId)?.LookupParameter(name));
+				typeValues[(typeId.Value, name)] = value;
 			}
 		}
 
-		return linked;
+		return value;
 	}
 
 	private static string Text(Parameter parameter)
@@ -395,121 +311,47 @@ public static class ElementScanner
 		return parameter.StorageType == StorageType.String ? parameter.AsString() : parameter.AsValueString();
 	}
 
-	/// <summary>
-	/// Elige la partida de origen por niveles de prioridad (ejemplar → tipo → materiales). En cada nivel se quedan los códigos
-	/// más profundos que coinciden con los enlaces; si queda uno, es la partida; si quedan varios, se prefieren las partidas
-	/// finales del presupuesto; si aún son varios, es un conflicto.
-	/// </summary>
-	internal static void Resolve(ElementRow row, Budget budget, params List<(string Code, string Name)>[] tiers)
+	/// <summary>Paso 2: los valores distintos que tiene cada parámetro del filtro en el modelo, con cuántos elementos.</summary>
+	public static Dictionary<int, Dictionary<string, int>> LinkValueCounts(Document doc, PartidasConfig config)
 	{
-		List<(string Code, string Name)> mismatched = null;
-		foreach (List<(string Code, string Name)> tier in tiers)
+		var counts = new Dictionary<int, Dictionary<string, int>>();
+		var typeValues = new Dictionary<(long, string), string>();
+		var links = Enumerable.Range(0, config.Levels)
+			.Where(i => config.Link(i).Mode == LinkMode.Parametro && !string.IsNullOrEmpty(config.Link(i).ParameterName)).ToList();
+		foreach (int i in links)
 		{
-			if (tier == null || tier.Count == 0)
+			counts[i + 1] = new Dictionary<string, int>(StringComparer.Ordinal);
+		}
+
+		if (links.Count == 0)
+		{
+			return counts;
+		}
+
+		foreach (Element element in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+		{
+			Category category = element.Category;
+			if (category == null || category.CategoryType != CategoryType.Model || element.ViewSpecific)
 			{
 				continue;
 			}
 
-			var deepest = tier.Where(c => !tier.Any(o => o.Code != c.Code && PartidaCode.IsAncestorOrSelf(c.Code, o.Code)))
-				.GroupBy(c => c.Code).Select(g => g.First()).ToList();
-			var matching = deepest.Where(c => MatchesLinks(c.Code, row.Linked)).ToList();
-			if (matching.Count == 0)
+			foreach (int i in links)
 			{
-				mismatched ??= deepest;
-				continue;
-			}
-
-			if (matching.Count > 1 && budget != null)
-			{
-				var leaves = matching.Where(c => budget.Find(c.Code)?.IsLeaf == true).ToList();
-				if (leaves.Count >= 1)
+				string value = LinkValue(doc, element, element.GetTypeId(), config.Link(i).ParameterName, typeValues);
+				if (!string.IsNullOrWhiteSpace(value))
 				{
-					matching = leaves;
+					value = value.Trim();
+					Dictionary<string, int> levelCounts = counts[i + 1];
+					levelCounts[value] = levelCounts.TryGetValue(value, out int n) ? n + 1 : 1;
 				}
 			}
-
-			if (matching.Count > 1)
-			{
-				row.SourceConflict = true;
-				row.Candidates = matching.Select(c => c.Code).OrderBy(c => c, StringComparer.Ordinal).ToList();
-				row.SourceParam = string.Join(" / ", matching.Select(c => c.Name).Distinct());
-				return;
-			}
-
-			row.SourceCode = matching[0].Code;
-			row.SourceParam = matching[0].Name;
-			if (mismatched != null)
-			{
-				AppendNote(row, "Ignorado por no coincidir con el enlace: " + string.Join(", ", mismatched.Select(c => $"{c.Code} ({c.Name})")));
-			}
-
-			return;
 		}
 
-		if (mismatched != null)
-		{
-			row.LinkMismatch = true;
-			row.Candidates = mismatched.Select(c => c.Code).Distinct().OrderBy(c => c, StringComparer.Ordinal).ToList();
-			row.SourceParam = string.Join(" / ", mismatched.Select(c => c.Name).Distinct());
-		}
+		return counts;
 	}
 
-	private static bool MatchesLinks(string code, string[] linked)
-	{
-		foreach (string link in linked ?? Array.Empty<string>())
-		{
-			if (!string.IsNullOrEmpty(link) && !PartidaCode.IsAncestorOrSelf(link, code))
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-	private static void AppendNote(ElementRow row, string note) =>
-		row.Note = string.IsNullOrEmpty(row.Note) ? note : row.Note + " " + note;
-
-	/// <summary>Calcula la propuesta y el estado (al analizar, al cambiar la preferencia y tras escribir).</summary>
-	public static void Evaluate(ElementRow row, Budget budget, PartidasConfig config)
-	{
-		int levels = config.Levels;
-		row.ProposedCode = config.PreferSource ? row.SourceCode ?? row.DycusaCode : row.DycusaCode ?? row.SourceCode;
-		if (row.ProposedCode == null)
-		{
-			row.Proposed = PartidaCode.Levels(row.HasParameterLink ? row.LinkedChain : null, levels);
-			row.Status = row.SourceConflict ? RowStatus.Conflicto
-				: row.LinkMismatch ? RowStatus.NoCoincide
-				: row.HasParameterLink && row.LinkedChain != null && !row.IsUpToDate ? RowStatus.Parcial
-				: RowStatus.SinPartida;
-			return;
-		}
-
-		row.Proposed = PartidaCode.Levels(row.ProposedCode, levels);
-		BudgetItem item = budget?.Find(row.ProposedCode);
-		if (!MatchesLinks(row.ProposedCode, row.Linked))
-		{
-			row.Status = RowStatus.NoCoincide;
-		}
-		else if (budget != null && item == null)
-		{
-			row.Status = RowStatus.NoEnPresupuesto;
-		}
-		else if (item != null && !item.IsLeaf)
-		{
-			row.Status = RowStatus.Titulo;
-		}
-		else if (row.DycusaCode != null && row.SourceCode != null && row.DycusaCode != row.SourceCode)
-		{
-			row.Status = RowStatus.Difiere;
-		}
-		else
-		{
-			row.Status = row.IsUpToDate && !row.DycusaInconsistent ? RowStatus.Ok : RowStatus.Pendiente;
-		}
-	}
-
-	/// <summary>Paso 3: busca qué parámetros del modelo tienen como valor las descripciones de cada nivel (p. ej. "ETAPA 1").</summary>
+	/// <summary>Paso 2: propone el nivel 1 fijo y busca parámetros cuyos valores coinciden con las descripciones de los niveles 2 y 3.</summary>
 	public static List<LinkSuggestion> SuggestLinks(Document doc, Budget budget, PartidasConfig config)
 	{
 		var suggestions = new List<LinkSuggestion>();
@@ -518,7 +360,6 @@ public static class ElementScanner
 			return suggestions;
 		}
 
-		// Nivel 1 con un solo título (p. ej. 03 ARQUITECTURA): vale para todo el modelo.
 		List<BudgetItem> first = budget.All.Where(i => i.Depth == 1).ToList();
 		if (first.Count == 1)
 		{
@@ -592,18 +433,6 @@ public static class ElementScanner
 		}
 
 		return suggestions.OrderBy(s => s.Level).ToList();
-	}
-
-	private static IEnumerable<ElementId> SafeMaterials(Element element)
-	{
-		try
-		{
-			return element.GetMaterialIds(false);
-		}
-		catch (Exception)
-		{
-			return Enumerable.Empty<ElementId>();
-		}
 	}
 
 	private static string LevelName(Document doc, Element element, Dictionary<long, string> cache)

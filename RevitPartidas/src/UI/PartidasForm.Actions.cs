@@ -35,11 +35,92 @@ internal sealed partial class PartidasForm
 		return false;
 	}
 
-	private void Write(Dictionary<long, string[]> assignments, string busyText, bool reset3D = false)
+	private void Write(Dictionary<long, string[]> assignments, string busyText, bool reset3D = false, Dictionary<long, string> typeCodes = null)
 	{
 		_handler.Assignments = assignments;
+		_handler.TypeCodes = typeCodes ?? new Dictionary<long, string>();
 		_handler.Reset3DAfterWrite = reset3D;
 		Raise(PartidasAction.Write, busyText);
+	}
+
+	/// <summary>
+	/// Escribe la partida elegida para cada elemento (los niveles) y, si está marcada la casilla, también el Código de montaje de su
+	/// tipo (el código más elegido para ese tipo). Avisa si otros elementos del mismo tipo cambiarán.
+	/// </summary>
+	private void AssignCodes(Dictionary<ElementRow, string> choices, string busyText, bool reset3D = false, IWin32Window owner = null)
+	{
+		if (choices.Count == 0 || !ParametersReady())
+		{
+			return;
+		}
+
+		var typeCodes = new Dictionary<long, string>();
+		string extra = string.Empty;
+		if (_saveMontaje.Checked)
+		{
+			foreach (var type in choices.Where(c => c.Key.TypeId >= 0).GroupBy(c => c.Key.TypeId))
+			{
+				string code = type.GroupBy(c => c.Value).OrderByDescending(g => g.Count()).First().Key;
+				if (_rows.First(r => r.TypeId == type.Key).AssemblyCode != code)
+				{
+					typeCodes[type.Key] = code;
+				}
+			}
+
+			var chosenIds = new HashSet<long>(choices.Keys.Select(r => r.Id));
+			int others = _rows.Count(r => typeCodes.ContainsKey(r.TypeId) && !chosenIds.Contains(r.Id));
+			if (typeCodes.Count > 0)
+			{
+				extra = $"\n\nCódigo de montaje: se escribe en {typeCodes.Count} tipo(s)." +
+					(others > 0 ? $" Atención: {others} elemento(s) más de esos tipos también lo tomarán (los de otra etapa usan su equivalente)." : string.Empty);
+			}
+		}
+
+		string summary = string.Join("\n", choices.GroupBy(c => c.Value).OrderByDescending(g => g.Count()).Take(6)
+			.Select(g => $"  {g.Key}  {Shorten(_budget?.Find(g.Key)?.Description, 60)}  → {g.Count()} elemento(s)"));
+		if (MessageBox.Show(owner ?? this, $"Asignar a {choices.Count} elemento(s):\n\n{summary}{extra}\n\nSe deshace con Ctrl+Z en Revit.", Text,
+				MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+		{
+			return;
+		}
+
+		Write(choices.ToDictionary(c => c.Key.Id, c => PartidaCode.Levels(c.Value, _config.Levels)), busyText, reset3D, typeCodes);
+	}
+
+	/// <summary>Confirma las sugerencias (código encontrado en un parámetro, o parecido de nombre) de los marcados, o de todos.</summary>
+	private void AcceptSuggestions()
+	{
+		List<ElementRow> marked = AllNodes(_results.Nodes).Any(n => n.Checked) ? Targets() : _rows;
+		List<ElementRow> targets = marked.Where(r => r.Status == RowStatus.Sugerencia && r.Candidates.Count > 0).ToList();
+		if (targets.Count == 0)
+		{
+			MessageBox.Show(this, "No hay sugerencias" + (marked == _rows ? "." : " entre los marcados."), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		AssignCodes(targets.ToDictionary(r => r, r => r.Candidates[0]), "Aceptando sugerencias…");
+	}
+
+	/// <summary>Doble clic / "Enlazar…": elegir la partida por código de montaje, sugerencias, nombre o código del presupuesto.</summary>
+	private void OpenLinkDialog(List<ElementRow> rows)
+	{
+		if (rows.Count == 0)
+		{
+			MessageBox.Show(this, "Selecciona o marca un grupo o elemento.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		if (_budget == null)
+		{
+			MessageBox.Show(this, "Carga el presupuesto en el paso 1.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		using var dialog = new LinkForm(rows, _budget, _matcher, _config, ids => SelectInRevit(ids));
+		if (dialog.ShowDialog(this) == DialogResult.OK && dialog.ChosenCode != null)
+		{
+			AssignCodes(rows.ToDictionary(r => r, r => dialog.ChosenFor(r)), "Enlazando partida…");
+		}
 	}
 
 	private void WritePending()
@@ -85,34 +166,13 @@ internal sealed partial class PartidasForm
 			return;
 		}
 
-		if (!ParametersReady())
+		if (!item.IsLeaf && MessageBox.Show(this, $"{item.Code} {item.Description} es un título, no una partida final. ¿Asignarlo igualmente?", Text,
+				MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
 		{
 			return;
 		}
 
-		string question = $"Asignar la partida\n\n{item.Code}  {item.Description}\n\na {targets.Count} elemento(s)?\nSe escriben los {_config.Levels} niveles.";
-		if (!item.IsLeaf)
-		{
-			question += "\n\nAtención: es un título, no una partida final del presupuesto.";
-		}
-
-		int mismatch = targets.Count(r => r.Linked != null && r.Linked.Any(l => l.Length > 0 && !PartidaCode.IsAncestorOrSelf(l, item.Code)));
-		if (mismatch > 0)
-		{
-			question += $"\n\nAtención: en {mismatch} elemento(s) no coincide con el nivel enlazado (p. ej. su ETAPA).";
-		}
-
-		int overwritten = targets.Count(r => r.DycusaCode != null && r.DycusaCode != item.Code);
-		if (overwritten > 0)
-		{
-			question += $"\n\n{overwritten} elemento(s) ya tienen otra partida escrita: se reemplaza.";
-		}
-
-		if (MessageBox.Show(this, question, Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
-		{
-			string[] levels = PartidaCode.Levels(item.Code, _config.Levels);
-			Write(targets.ToDictionary(r => r.Id, r => levels), "Asignando partida…");
-		}
+		AssignCodes(targets.ToDictionary(r => r, r => LinkForm.InBranch(r, item.Code, _matcher)), "Asignando partida…");
 	}
 
 	private void ClearTargets()
@@ -151,7 +211,7 @@ internal sealed partial class PartidasForm
 		List<ElementRow> targets = Targets().Where(r => r.Candidates.Count > 0).ToList();
 		if (targets.Count == 0)
 		{
-			MessageBox.Show(this, "Marca o selecciona un grupo de \"Conflicto\" (o \"No coincide\"): son los que tienen varias opciones.", Text,
+			MessageBox.Show(this, "Marca o selecciona un grupo de \"Conflicto\", \"Sugerencia\" o \"No coincide\": son los que tienen opciones.", Text,
 				MessageBoxButtons.OK, MessageBoxIcon.Information);
 			return;
 		}
@@ -237,21 +297,8 @@ internal sealed partial class PartidasForm
 
 	private void ChooseResolution(string code)
 	{
-		BudgetItem item = _budget?.Find(code);
-		if (MessageBox.Show(_resolveForm ?? (IWin32Window)this,
-				$"Asignar\n\n{code}  {item?.Description}\n\na los {_resolveRows.Count} elemento(s) en conflicto?", Text,
-				MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-		{
-			return;
-		}
-
-		if (!ParametersReady())
-		{
-			return;
-		}
-
-		string[] levels = PartidaCode.Levels(code, _config.Levels);
-		Write(_resolveRows.ToDictionary(r => r.Id, r => levels), "Asignando y quitando colores…", reset3D: true);
+		AssignCodes(_resolveRows.ToDictionary(r => r, r => LinkForm.InBranch(r, code, _matcher)), "Asignando y quitando colores…", reset3D: true,
+			owner: _resolveForm != null && !_resolveForm.IsDisposed ? _resolveForm : null);
 	}
 
 	#endregion
@@ -319,7 +366,7 @@ internal sealed partial class PartidasForm
 
 	private IEnumerable<string[]> ElementLines()
 	{
-		var header = new List<string> { "Id", "Estado", "Categoría", "Familia : Tipo", "Nivel", "Grupo / nota", "Parámetro de origen", "Código de origen", "Opciones" };
+		var header = new List<string> { "Id", "Estado", "Categoría", "Familia : Tipo", "Nivel", "Grupo / nota", "Código de montaje", "Descripción de montaje", "Partida (montaje)", "Opciones" };
 		header.AddRange(_config.Names.Select(n => n + " (escrito)"));
 		header.AddRange(_config.Names.Select(n => n + " (propuesto)"));
 		header.AddRange(new[] { "Nota", "Área (m²)", "Longitud (m)", "Volumen (m³)" });
@@ -330,7 +377,7 @@ internal sealed partial class PartidasForm
 			var cells = new List<string>
 			{
 				row.Id.ToString(CultureInfo.InvariantCulture), StatusText[row.Status], row.Category, row.FamilyType, row.Level, GroupLabel(row),
-				row.SourceParam ?? string.Empty, row.SourceCode ?? string.Empty, string.Join(" / ", row.Candidates)
+				row.AssemblyCode, row.AssemblyDescription, row.SourceCode ?? string.Empty, string.Join(" / ", row.Candidates)
 			};
 			cells.AddRange(Enumerable.Range(0, _config.Levels).Select(i => i < row.Current.Length ? row.Current[i] ?? string.Empty : string.Empty));
 			cells.AddRange(Enumerable.Range(0, _config.Levels).Select(i => i < row.Proposed.Length ? row.Proposed[i] : string.Empty));
