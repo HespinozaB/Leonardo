@@ -5,20 +5,48 @@ using System.Text;
 
 namespace RevitPartidas.Core;
 
-/// <summary>Una partida candidata para un elemento, con su parecido (0–1) y de dónde salió.</summary>
+/// <summary>Una partida candidata para un elemento, con todo lo que la respalda en su metadata.</summary>
 public sealed class Suggestion
 {
 	public string Code;
 
+	/// <summary>Respaldo total: 1 por parámetro que tiene el código + parecido de nombre (0–1) + un poco por cada texto más.</summary>
 	public double Score;
 
-	/// <summary>Qué la sugiere (p. ej. "Familia : Tipo", "DOC_NOM_PARTIDA (tipo)").</summary>
-	public string Source;
+	/// <summary>Mejor parecido de nombre (0–1) entre todos los textos del elemento.</summary>
+	public double NameScore;
 
-	/// <summary>True si un parámetro tiene escrito el código exacto; false si es por parecido de nombre.</summary>
+	/// <summary>Parámetros que tienen escrito el código (o uno equivalente de la otra etapa).</summary>
+	public List<string> CodeSources = new List<string>();
+
+	/// <summary>Textos (familia, tipo, parámetros) cuyo nombre se parece a la partida.</summary>
+	public List<string> NameSources = new List<string>();
+
 	public bool ByCode;
 
-	public override string ToString() => ByCode ? $"{Code} (código en {Source})" : $"{Code} ({Score:P0} por {Source})";
+	public bool Leaf = true;
+
+	/// <summary>Resumen del respaldo, p. ej. "código en DO_Partida_3, DYCUSA_Partida_05 · nombre 80 % (Familia, DOC_NOM_PARTIDA)".</summary>
+	public string Source
+	{
+		get
+		{
+			var parts = new List<string>();
+			if (CodeSources.Count > 0)
+			{
+				parts.Add("código en " + string.Join(", ", CodeSources.Take(3)) + (CodeSources.Count > 3 ? $" y {CodeSources.Count - 3} más" : string.Empty));
+			}
+
+			if (NameSources.Count > 0)
+			{
+				parts.Add($"nombre {NameScore:P0} (" + string.Join(", ", NameSources.Take(3)) + (NameSources.Count > 3 ? "…" : string.Empty) + ")");
+			}
+
+			return string.Join(" · ", parts);
+		}
+	}
+
+	public override string ToString() => $"{Code} ({Source})";
 }
 
 /// <summary>

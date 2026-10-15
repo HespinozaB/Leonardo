@@ -2,7 +2,7 @@
 
 Addin hermano de *EMASY DWG Tools* y *EMASY Parámetros*. Está en la pestaña **EMASY**, panel **Partidas**, botón **Partidas DYCUSA**.
 
-El **Código de montaje** (parámetro de tipo de Revit) dice la partida del presupuesto. El addin llena con él los parámetros de nivel **DYCUSA_PARTIDA 1 … 6**. Usa la **etapa** (u otro parámetro) como filtro, y revisa el resto de parámetros y los nombres para sugerir la partida cuando falta el código.
+Lee la estructura del presupuesto y la carga como tabla de **Código de montaje y Descripción de montaje**. Después asocia cada tipo a su partida: usa la **etapa** (u otro parámetro) como filtro y revisa toda la metadata (todos los parámetros y los nombres) para sugerirla. Opcionalmente, en el paso 4, guarda la partida en parámetros de nivel por elemento (**DYCUSA_PARTIDA 1 … 6**):
 
 | Parámetro | `03.01.04.02.01.01` | `03.01.01.01.01` |
 |---|---|---|
@@ -14,53 +14,50 @@ El **Código de montaje** (parámetro de tipo de Revit) dice la partida del pres
 | DYCUSA_PARTIDA 6 | `03.01.04.02.01.01` | *(vacío)* |
 
 ## Paso 1 · Código de montaje
-* **Cargar presupuesto…**: el addin busca en cualquier hoja la fila con *Item / Descripción / Und.*. Una fila con unidad es una partida final; una fila sin unidad es un título.
-* **Niveles**: se detectan del presupuesto (6). La tabla muestra un ejemplo de cada nivel.
-* **Parámetros de nivel**: se elige el prefijo (`DYCUSA_PARTIDA ` da DYCUSA_PARTIDA 1…6; con "dos cifras" da DYCUSA_01…06) y se crean con **Crear / actualizar**. Son compartidos, de texto, de ejemplar, en todas las categorías de modelo y pueden variar entre grupos.
-* **Generar y cargar códigos de montaje del presupuesto**:
-  - escribe la tabla de códigos de montaje con todos los códigos y descripciones del presupuesto en `%AppData%\EMASY\Codigos de montaje - <presupuesto>.txt`;
-  - la carga en el modelo, reemplazando la tabla actual (p. ej. Uniformat);
-  - desde entonces, en las propiedades de tipo, el *Código de montaje* ofrece las partidas y la *Descripción de montaje* muestra su nombre;
-  - los códigos ya escritos en los tipos no se borran.
+* **Cargar presupuesto…**: el addin lee su estructura en cualquier hoja con *Item / Descripción / Und.*. Una fila con unidad es una partida final; una fila sin unidad es un título. Los **niveles** (6) se detectan del presupuesto.
+* **Generar y cargar Código de montaje y Descripción de montaje**:
+  - escribe la tabla con todos los códigos y descripciones del presupuesto (`%AppData%\EMASY\Codigos de montaje - <presupuesto>.txt`);
+  - la carga en el modelo, reemplazando la tabla actual;
+  - después **comprueba que cada código quedó bajo su padre**. Revit acepta menos niveles en el código de montaje que los 6 del presupuesto: si deja códigos fuera de su rama, los más profundos se vuelven a escribir junto a su partida de nivel 5, dentro de la misma rama, y se recarga. El mensaje indica cuántos niveles admite y cuántos códigos se ajustaron.
+  - Los códigos ya escritos en los tipos no se borran.
 
 ## Paso 2 · Filtros
 Para cada nivel se elige su origen:
-* **Del código de montaje** (lo normal).
 * **Valor fijo**: por ejemplo, nivel 1 = `03`, porque todo es ARQUITECTURA.
-* **Parámetro de Revit** (parámetro de regla): por ejemplo, nivel 2 desde `PR_Elemento_Etapa`.
+* **Parámetro de Revit** (parámetro de regla): por ejemplo, nivel 2 desde `PR_Elemento_Etapa`. **Leer valores** lista los valores del modelo y su número de elementos. En la **regla** eliges el código de cada valor: automático por descripción ("ETAPA 1" → 03.01), un código concreto, o ignorarlo.
+* **Múltiple**: el nivel sale de revisar **toda la metadata** del elemento. Primero el Código de montaje y, si falta, todos los parámetros de ejemplar y de tipo, más los nombres.
 
-**Leer valores de los parámetros del filtro** lista los valores que tiene el modelo y cuántos elementos tienen cada uno. En la **regla** eliges qué código corresponde a cada valor:
-* *automático*: el código cuya descripción del presupuesto es igual al valor ("ETAPA 1" → 03.01);
-* un código concreto;
-* *ignorar este valor*.
-
-Los valores sin coincidencia aparecen en naranja. **Detectar filtros automáticamente** propone el nivel 1 fijo y el parámetro de etapa.
-
-El filtro decide la rama de cada elemento. El Código de montaje es de **tipo** y un mismo tipo puede estar en las dos etapas; por eso, si su código es de la otra etapa, se usa la **partida equivalente** (misma descripción y unidad) de la etapa del elemento. Si no hay equivalente, se avisa.
-
-La casilla *El código de montaje manda* (activada por defecto) hace que el código de montaje prevalezca sobre lo ya escrito en los niveles.
+El filtro decide la rama. Si el código de montaje de un tipo es de la otra etapa, se usa la partida equivalente (misma descripción y unidad) de la etapa del elemento.
 
 ## Paso 3 · Revisión
-**Cómo se decide la partida de cada elemento:**
-1. El **Código de montaje** de su tipo, ajustado a la etapa. Si es un título (p. ej. 03.01.11 OTROS), se sugiere por nombre la partida dentro de ese título.
-2. Si no hay código de montaje válido, se leen **todos los parámetros de ejemplar y de tipo**:
-   - un **código del presupuesto** escrito en cualquiera de ellos (p. ej. `DOC_N° PARTIDA 1 = 03.01.07.01.02`) se **sugiere**;
-   - si es de la otra etapa, se sugiere su equivalente.
-3. Si tampoco hay, se compara por **nombre**: familia, tipo y valores de texto de los parámetros (p. ej. `DOC_NOM_PARTIDA`) contra las descripciones del presupuesto de la rama del filtro. La comparación ignora tildes, plurales y palabras vacías, y da un porcentaje de parecido. Por ejemplo, la familia "Canaleta pluvial metálica" lleva a 03.02.13.07 CANALETA PLUVIAL METÁLICA… en ETAPA 2.
+**Qué partida se le asigna a cada elemento:**
+1. El **Código de montaje** de su tipo, ajustado a la etapa. Si es un título, se sugiere por nombre la partida dentro de él.
+2. Si falta, se reúne **toda la metadata** del elemento:
+   - cada parámetro de ejemplar o de tipo que tiene un código del presupuesto es un **voto** para esa partida;
+   - un código de título suma a su partida;
+   - un código de la otra etapa suma a su equivalente;
+   - cada texto (familia, tipo, valores de parámetros como `DOC_NOM_PARTIDA`) suma su **parecido** de nombre.
 
-Las sugerencias **no se escriben solas**: aparecen como *Sugerencia (confirmar)* o, si hay empate, como *Conflicto*.
+   Gana la partida con más respaldo. Si otra queda cerca, el elemento queda como *Conflicto*. El grupo muestra todo lo que respalda la sugerencia (p. ej. "código en DYCUSA_Partida_05, DO_Partida_5 · nombre 91 % (DOC_NOM_PARTIDA)").
 
-**La lista** se agrupa por **Categoría → estado y nota → elementos** y se expande al hacer clic. Abajo se ve el detalle: Código y Descripción de montaje, filtro, partida y sugerencias con su motivo.
+**Al seleccionar** un grupo o elemento, su partida (la sugerida, o la de su código de montaje) **se marca en el árbol del presupuesto**. Así ves dónde cae y puedes cambiarla por otra con *Asignar esta partida a los marcados*.
 
-* **Doble clic** en un grupo o elemento, o **Enlazar…**, abre la ventana de enlace:
-  - muestra el Código y la Descripción de montaje, el filtro y las sugerencias;
-  - permite buscar la partida **por código o por nombre**, dentro de la etapa del elemento o en todo el presupuesto;
-  - **Asignar esta partida** escribe los niveles y, con la casilla *Guardar también como Código de montaje del tipo*, también el código de montaje del tipo. Se avisa si otros elementos del mismo tipo también lo tomarán; los de la otra etapa usan su equivalente.
-* **Aceptar sugerencias**: confirma la sugerencia de todos los elementos con *Sugerencia* (o solo de los marcados).
-* **Escribir pendientes**: escribe los niveles de los que ya tienen partida clara por su código de montaje, y los niveles 1–2 de los que solo tienen filtro.
-* **Resolver en 3D…**: para conflictos y sugerencias. Pinta en rojo los elementos a decidir y en colores elementos que ya tienen cada opción; eliges con un botón o con un clic en el modelo.
-* El presupuesto a la izquierda muestra cuántos elementos tiene cada partida. Con *Asignar esta partida a los marcados* se asigna directamente.
-* **Usar selección de Revit**, **Seleccionar en Revit**, **Vaciar parámetros** y **Exportar CSV…** (cobertura por partida y elementos con su código de montaje).
+**Botones del paso 3** (todos asocian la partida al **Código de montaje** del tipo; la Descripción de montaje sale de la tabla del paso 1):
+* **Aceptar sugerencia seleccionada**: solo el grupo o elemento seleccionado (o los marcados).
+* **Aceptar todas**: todas las sugerencias.
+* **Enlazar…** (o doble clic): busca la partida por código o por nombre, viendo el Código y la Descripción de montaje, el filtro y las sugerencias.
+* **Resolver en 3D…**: pinta los elementos con varias opciones; eliges con un botón o un clic en el modelo.
+
+En el tipo va el código de la etapa más frecuente; los elementos de la otra etapa leen su equivalente. Antes de escribir se avisa si otros elementos del mismo tipo cambiarán.
+
+También están **Usar selección de Revit**, **Seleccionar en Revit** y **Exportar CSV…**.
+
+## Paso 4 · Parámetros de nivel (opcional)
+* Elige el prefijo (`DYCUSA_PARTIDA ` da DYCUSA_PARTIDA 1…6; con dos cifras da DYCUSA_01…06) y pulsa **Crear / actualizar parámetros**. Son de ejemplar, así cada elemento guarda la partida de su etapa.
+* **Escribir niveles en los pendientes** los llena desde la partida de cada elemento.
+* **Vaciar niveles** los borra de lo marcado en la revisión.
+* Si existen en el modelo, las asignaciones del paso 3 también los escriben.
+* Sin estos parámetros, un elemento con código de montaje válido ya queda **OK**.
 
 ### Estados
 
@@ -72,8 +69,8 @@ Las sugerencias **no se escriben solas**: aparecen como *Sugerencia (confirmar)*
 | **No está en el presupuesto** | El código de montaje no existe en el presupuesto |
 | **Es título** | El código de montaje es un título y no hay sugerencia dentro de él |
 | **Difiere de lo escrito** | Lo escrito en los niveles y el código de montaje no coinciden |
-| **Pendiente** | Partida clara por su código de montaje; falta escribir los niveles |
-| **Solo niveles superiores** | Sin partida, pero el filtro da los niveles 1–2 |
+| **Pendiente** | Partida clara; faltan los parámetros de nivel (solo si existen, paso 4) |
+| **Solo niveles superiores** | Sin partida, pero el filtro da los niveles 1–2 (con parámetros de nivel) |
 | **Sin partida** | Nada apunta a una partida |
 | **OK** | Niveles escritos y coherentes con el presupuesto |
 
@@ -81,7 +78,7 @@ Todas las escrituras se hacen en una transacción y se deshacen con Ctrl+Z.
 
 ## Limitaciones
 
-* El Código de montaje es de tipo: si un tipo se usa para partidas distintas (no solo por etapa), conviene duplicar el tipo o asignar por elemento sin la casilla *Guardar también como Código de montaje*.
+* El Código de montaje es de tipo: si un tipo se usa para partidas distintas (no solo por etapa), conviene duplicar el tipo; los parámetros de nivel (paso 4) sí guardan la partida por elemento.
 * No se leen los elementos de modelos vinculados.
 * La cantidad BIM del CSV es orientativa: usa el área, la longitud o el volumen del elemento completo.
 

@@ -44,57 +44,68 @@ internal sealed partial class PartidasForm
 	}
 
 	/// <summary>
-	/// Escribe la partida elegida para cada elemento (los niveles) y, si está marcada la casilla, también el Código de montaje de su
-	/// tipo (el código más elegido para ese tipo). Avisa si otros elementos del mismo tipo cambiarán.
+	/// Asocia la partida elegida al Código de montaje del tipo de cada elemento (el código más elegido para ese tipo; la Descripción
+	/// de montaje sale de la tabla del paso 1). Si el modelo tiene los parámetros de nivel (paso 4), también los escribe en cada
+	/// elemento con la partida de su etapa. Avisa si otros elementos del mismo tipo cambiarán.
 	/// </summary>
 	private void AssignCodes(Dictionary<ElementRow, string> choices, string busyText, bool reset3D = false, IWin32Window owner = null)
 	{
-		if (choices.Count == 0 || !ParametersReady())
+		if (choices.Count == 0)
 		{
 			return;
 		}
 
 		var typeCodes = new Dictionary<long, string>();
-		string extra = string.Empty;
-		if (_saveMontaje.Checked)
+		foreach (var type in choices.Where(c => c.Key.TypeId >= 0).GroupBy(c => c.Key.TypeId))
 		{
-			foreach (var type in choices.Where(c => c.Key.TypeId >= 0).GroupBy(c => c.Key.TypeId))
+			// En el tipo va el código de la etapa más frecuente; los de la otra etapa lo leen como su equivalente.
+			string code = type.GroupBy(c => c.Value).OrderByDescending(g => g.Count()).First().Key;
+			if (PartidaCode.Normalize(_rows.First(r => r.TypeId == type.Key).AssemblyCode) != code)
 			{
-				string code = type.GroupBy(c => c.Value).OrderByDescending(g => g.Count()).First().Key;
-				if (_rows.First(r => r.TypeId == type.Key).AssemblyCode != code)
-				{
-					typeCodes[type.Key] = code;
-				}
-			}
-
-			var chosenIds = new HashSet<long>(choices.Keys.Select(r => r.Id));
-			int others = _rows.Count(r => typeCodes.ContainsKey(r.TypeId) && !chosenIds.Contains(r.Id));
-			if (typeCodes.Count > 0)
-			{
-				extra = $"\n\nCódigo de montaje: se escribe en {typeCodes.Count} tipo(s)." +
-					(others > 0 ? $" Atención: {others} elemento(s) más de esos tipos también lo tomarán (los de otra etapa usan su equivalente)." : string.Empty);
+				typeCodes[type.Key] = code;
 			}
 		}
 
+		bool levels = choices.Keys.Any(r => r.HasDycusaParameters);
+		int withoutType = choices.Keys.Count(r => r.TypeId < 0);
+		if (typeCodes.Count == 0 && !levels)
+		{
+			MessageBox.Show(owner ?? this, withoutType > 0
+					? "Estos elementos no tienen tipo (no admiten Código de montaje). Crea los parámetros de nivel en el paso 4 para guardar su partida."
+					: "Los tipos ya tienen ese Código de montaje.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		var chosenIds = new HashSet<long>(choices.Keys.Select(r => r.Id));
+		int others = _rows.Count(r => typeCodes.ContainsKey(r.TypeId) && !chosenIds.Contains(r.Id));
 		string summary = string.Join("\n", choices.GroupBy(c => c.Value).OrderByDescending(g => g.Count()).Take(6)
 			.Select(g => $"  {g.Key}  {Shorten(_budget?.Find(g.Key)?.Description, 60)}  → {g.Count()} elemento(s)"));
-		if (MessageBox.Show(owner ?? this, $"Asignar a {choices.Count} elemento(s):\n\n{summary}{extra}\n\nSe deshace con Ctrl+Z en Revit.", Text,
-				MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+		string question = $"Asociar a {choices.Count} elemento(s):\n\n{summary}\n\n" +
+			$"Código y Descripción de montaje: en {typeCodes.Count} tipo(s)." +
+			(others > 0 ? $"\nAtención: {others} elemento(s) más de esos tipos también tomarán el código (los de otra etapa leen su equivalente)." : string.Empty) +
+			(withoutType > 0 ? $"\n{withoutType} elemento(s) sin tipo no admiten Código de montaje." : string.Empty) +
+			(levels ? "\nParámetros de nivel: se escriben en los elementos." : string.Empty) +
+			"\n\nSe deshace con Ctrl+Z en Revit.";
+		if (MessageBox.Show(owner ?? this, question, Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
 		{
 			return;
 		}
 
-		Write(choices.ToDictionary(c => c.Key.Id, c => PartidaCode.Levels(c.Value, _config.Levels)), busyText, reset3D, typeCodes);
+		Dictionary<long, string[]> assignments = levels
+			? choices.Where(c => c.Key.HasDycusaParameters).ToDictionary(c => c.Key.Id, c => PartidaCode.Levels(c.Value, _config.Levels))
+			: new Dictionary<long, string[]>();
+		Write(assignments, busyText, reset3D, typeCodes);
 	}
 
-	/// <summary>Confirma las sugerencias (código encontrado en un parámetro, o parecido de nombre) de los marcados, o de todos.</summary>
-	private void AcceptSuggestions()
+	/// <summary>Confirma la sugerencia de lo seleccionado/marcado, o de todos los que tienen una.</summary>
+	private void AcceptSuggestions(bool selectedOnly)
 	{
-		List<ElementRow> marked = AllNodes(_results.Nodes).Any(n => n.Checked) ? Targets() : _rows;
-		List<ElementRow> targets = marked.Where(r => r.Status == RowStatus.Sugerencia && r.Candidates.Count > 0).ToList();
+		List<ElementRow> scope = selectedOnly ? Targets() : _rows;
+		List<ElementRow> targets = scope.Where(r => r.Status == RowStatus.Sugerencia && r.Candidates.Count > 0).ToList();
 		if (targets.Count == 0)
 		{
-			MessageBox.Show(this, "No hay sugerencias" + (marked == _rows ? "." : " entre los marcados."), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			MessageBox.Show(this, selectedOnly ? "Selecciona (o marca) un grupo o elemento con \"Sugerencia\"." : "No hay sugerencias.", Text,
+				MessageBoxButtons.OK, MessageBoxIcon.Information);
 			return;
 		}
 

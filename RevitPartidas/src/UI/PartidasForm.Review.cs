@@ -90,7 +90,7 @@ internal sealed partial class PartidasForm
 	private readonly Button _writePending = new Button();
 	private readonly Button _acceptSuggestions = new Button();
 	private readonly Button _link = new Button();
-	private readonly CheckBox _saveMontaje = new CheckBox();
+	private readonly Button _acceptSelected = new Button();
 	private readonly Button _resolve3D = new Button();
 	private readonly Button _clear = new Button();
 	private readonly Button _selectRows = new Button();
@@ -102,6 +102,7 @@ internal sealed partial class PartidasForm
 	private HashSet<long> _revitSelection = new HashSet<long>();
 	private Dictionary<long, string> _searchKeys = new Dictionary<long, string>();
 	private bool _syncingChecks;
+	private bool _revealing;
 
 	#region Layout
 
@@ -123,22 +124,17 @@ internal sealed partial class PartidasForm
 		};
 
 		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 6, 8, 0), WrapContents = false };
-		Setup(_writePending, "Escribir pendientes", WritePending, bold: true);
-		Setup(_acceptSuggestions, "Aceptar sugerencias", AcceptSuggestions, bold: true);
+		Setup(_acceptSelected, "Aceptar sugerencia seleccionada", () => AcceptSuggestions(selectedOnly: true), bold: true);
+		_acceptSelected.ForeColor = Color.RoyalBlue;
+		Setup(_acceptSuggestions, "Aceptar todas", () => AcceptSuggestions(selectedOnly: false));
 		_acceptSuggestions.ForeColor = Color.RoyalBlue;
 		Setup(_link, "Enlazar…", () => OpenLinkDialog(Targets()));
 		Setup(_resolve3D, "Resolver en 3D…", Resolve3D, bold: true);
 		_resolve3D.ForeColor = Color.Firebrick;
-		Setup(_clear, "Vaciar parámetros", ClearTargets);
 		Setup(_selectRows, "Seleccionar en Revit", () => SelectInRevit(Targets().Select(r => r.Id)));
 		Setup(_useRevitSelection, "Usar selección de Revit", () => Raise(PartidasAction.ReadSelection, null));
 		Setup(_export, "Exportar CSV…", ExportCsv);
-		_saveMontaje.Text = "Guardar también como Código de montaje del tipo";
-		_saveMontaje.AutoSize = true;
-		_saveMontaje.Checked = Settings.Get("saveMontaje") != "0";
-		_saveMontaje.Margin = new Padding(8, 7, 8, 0);
-		_saveMontaje.CheckedChanged += (s, e) => Settings.Set("saveMontaje", _saveMontaje.Checked ? "1" : "0");
-		bottom.Controls.AddRange(new Control[] { _writePending, _acceptSuggestions, _link, _resolve3D, _saveMontaje, _clear, _selectRows, _useRevitSelection, _export });
+		bottom.Controls.AddRange(new Control[] { _acceptSelected, _acceptSuggestions, _link, _resolve3D, _selectRows, _useRevitSelection, _export });
 
 		page.Controls.Add(split);
 		page.Controls.Add(bottom);
@@ -176,7 +172,7 @@ internal sealed partial class PartidasForm
 		_budgetTree.AfterSelect += (s, e) => Safe(() =>
 		{
 			UpdateButtons();
-			if (_filter.SelectedIndex == FilterNode)
+			if (!_revealing && _filter.SelectedIndex == FilterNode)
 			{
 				Populate();
 			}
@@ -239,6 +235,7 @@ internal sealed partial class PartidasForm
 		_results.AfterSelect += (s, e) => Safe(() =>
 		{
 			ShowDetails(e.Node);
+			RevealInBudget(e.Node);
 			UpdateButtons();
 		});
 		// Doble clic: enlazar con el presupuesto por código de montaje, nombre o código (grupo o elemento).
@@ -460,9 +457,7 @@ internal sealed partial class PartidasForm
 			case RowStatus.Sugerencia:
 			{
 				Suggestion best = row.Suggestions.FirstOrDefault(x => x.Code == row.Candidates.FirstOrDefault());
-				return best == null ? "Sugerencia" : best.ByCode
-					? $"Sugerencia · {Describe(best.Code)} (código en {best.Source})"
-					: $"Sugerencia {best.Score:P0} · {Describe(best.Code)} (por {best.Source})";
+				return best == null ? "Sugerencia" : $"Sugerencia · {Describe(best.Code)} ({best.Source})";
 			}
 			case RowStatus.NoCoincide:
 				return $"No coincide con {LinkText(row)} · " + string.Join(" / ", row.Candidates.Count > 0 ? row.Candidates : new List<string> { row.ProposedCode });
@@ -662,6 +657,36 @@ internal sealed partial class PartidasForm
 		return rows.Values.ToList();
 	}
 
+	/// <summary>
+	/// Al seleccionar un grupo o elemento, marca en el presupuesto su partida (la sugerida, o la que tiene por código de montaje):
+	/// así se ve dónde cae y, con "Asignar esta partida", se puede cambiar por otra de al lado.
+	/// </summary>
+	private void RevealInBudget(TreeNode node)
+	{
+		if (!(node?.Tag is NodeInfo info) || info.Rows.Count == 0)
+		{
+			return;
+		}
+
+		ElementRow row = info.Row ?? info.Rows[0];
+		string code = row.Candidates.FirstOrDefault() ?? row.ProposedCode ?? row.SourceCode ?? PartidaCode.Normalize(row.AssemblyCode);
+		if (code == null || !_budgetNodes.TryGetValue(code, out TreeNode budgetNode))
+		{
+			return;
+		}
+
+		_revealing = true;
+		try
+		{
+			_budgetTree.SelectedNode = budgetNode;
+			budgetNode.EnsureVisible();
+		}
+		finally
+		{
+			_revealing = false;
+		}
+	}
+
 	private void ShowDetails(TreeNode node)
 	{
 		if (!(node?.Tag is NodeInfo info))
@@ -692,7 +717,7 @@ internal sealed partial class PartidasForm
 			foreach (Suggestion suggestion in row.Suggestions)
 			{
 				text.AppendLine($"  Sugerencia: {Describe(suggestion.Code)}  — " +
-					(suggestion.ByCode ? $"código en {suggestion.Source}" : $"{suggestion.Score:P0} por {suggestion.Source}"));
+					suggestion.Source);
 			}
 
 			string[] names = _config.Names;
@@ -800,9 +825,11 @@ internal sealed partial class PartidasForm
 		_link.Enabled = idle && hasTarget;
 		int suggestions = _rows.Count(r => r.Status == RowStatus.Sugerencia);
 		_acceptSuggestions.Enabled = idle && suggestions > 0;
-		_acceptSuggestions.Text = $"Aceptar sugerencias ({suggestions})";
+		_acceptSuggestions.Text = $"Aceptar todas ({suggestions})";
 		int pending = _rows.Count(r => r.Status == RowStatus.Pendiente || r.Status == RowStatus.Parcial);
-		_writePending.Text = $"Escribir pendientes ({pending})";
+		_writePending.Text = $"Escribir niveles en los pendientes ({pending})";
+		bool selectedSuggestion = idle && (Targets().Any(r => r.Status == RowStatus.Sugerencia));
+		_acceptSelected.Enabled = selectedSuggestion;
 	}
 
 	#endregion

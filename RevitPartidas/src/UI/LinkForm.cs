@@ -78,9 +78,9 @@ internal sealed class LinkForm : Form
 		_results.MultiSelect = false;
 		_results.HideSelection = false;
 		_results.Columns.Add("Código", 140);
-		_results.Columns.Add("Descripción", 560);
+		_results.Columns.Add("Descripción", 430);
 		_results.Columns.Add("Und.", 50);
-		_results.Columns.Add("Por qué", 200);
+		_results.Columns.Add("Por qué (metadata)", 330);
 		_results.SelectedIndexChanged += (s, e) => _ok.Enabled = _results.SelectedItems.Count > 0;
 		_results.DoubleClick += (s, e) => Accept();
 
@@ -159,9 +159,9 @@ internal sealed class LinkForm : Form
 		if (search.Length == 0)
 		{
 			foreach (Suggestion suggestion in _rows.SelectMany(r => r.Suggestions).GroupBy(x => x.Code).Select(g => g.OrderByDescending(x => x.Score).First())
-						 .OrderByDescending(x => x.ByCode).ThenByDescending(x => x.Score))
+						 .OrderByDescending(x => x.Score))
 			{
-				Add(_budget.Find(suggestion.Code), suggestion.ByCode ? $"código en {suggestion.Source}" : $"{suggestion.Score:P0} por {suggestion.Source}");
+				Add(_budget.Find(suggestion.Code), suggestion.Source);
 			}
 
 			foreach (string montaje in _rows.Select(r => PartidaCode.Normalize(r.AssemblyCode)).Where(c => c != null).Distinct())

@@ -25,7 +25,7 @@ public enum RowStatus
 	/// <summary>Lo escrito en los parámetros de nivel y el código de montaje dicen partidas distintas.</summary>
 	Difiere,
 
-	/// <summary>Partida clara: falta escribir (o completar) los parámetros de nivel.</summary>
+	/// <summary>Partida clara: falta escribir (o completar) los parámetros de nivel (paso 4, si existen en el modelo).</summary>
 	Pendiente,
 
 	/// <summary>Sin partida, pero el filtro da los niveles superiores (p. ej. 03 / 03.01): se pueden escribir ya.</summary>
@@ -236,7 +236,7 @@ public static class Classifier
 		{
 			row.Proposed = PartidaCode.Levels(row.HasParameterLink ? row.LinkedChain : null, levels);
 			row.Status = suggestionStatus ?? montajeProblem ??
-				(row.HasParameterLink && row.LinkedChain != null && !row.IsUpToDate ? RowStatus.Parcial : RowStatus.SinPartida);
+				(row.HasDycusaParameters && row.HasParameterLink && row.LinkedChain != null && !row.IsUpToDate ? RowStatus.Parcial : RowStatus.SinPartida);
 			return;
 		}
 
@@ -265,14 +265,29 @@ public static class Classifier
 		}
 		else
 		{
-			row.Status = row.IsUpToDate && !row.DycusaInconsistent ? RowStatus.Ok : RowStatus.Pendiente;
+			// Los parámetros de nivel son opcionales (paso 4): sin ellos, una partida clara ya está OK.
+			row.Status = !row.HasDycusaParameters || (row.IsUpToDate && !row.DycusaInconsistent) ? RowStatus.Ok : RowStatus.Pendiente;
 		}
 	}
 
-	/// <summary>Busca partidas en los parámetros (código exacto) y en los nombres (parecido). Devuelve el estado si encontró algo.</summary>
+	/// <summary>
+	/// Reúne toda la metadata del elemento: cada parámetro que tiene escrito un código del presupuesto es un voto para esa partida,
+	/// y cada texto (familia, tipo, valores de parámetros) suma su parecido con la descripción. Gana la partida con más respaldo;
+	/// si otra queda cerca, es un conflicto. Devuelve el estado si encontró algo.
+	/// </summary>
 	private static RowStatus? Suggest(ElementRow row, Budget budget, BudgetMatcher matcher, string branch, string titleBranch)
 	{
-		var byCode = new Dictionary<string, Suggestion>(StringComparer.Ordinal);
+		var evidence = new Dictionary<string, Suggestion>(StringComparer.Ordinal);
+		Suggestion For(string code)
+		{
+			if (!evidence.TryGetValue(code, out Suggestion suggestion))
+			{
+				evidence[code] = suggestion = new Suggestion { Code = code };
+			}
+
+			return suggestion;
+		}
+
 		var mismatched = new List<string>();
 		foreach ((string code, string source) in row.CodeHits)
 		{
@@ -293,30 +308,27 @@ public static class Classifier
 				}
 
 				target = equivalent.Code;
-				from = $"{source}: {code} → equivalente";
+				from = $"{source} ({code} → equivalente)";
 			}
 
-			if (!byCode.ContainsKey(target))
+			Suggestion suggestion = For(target);
+			if (!suggestion.CodeSources.Contains(from))
 			{
-				byCode[target] = new Suggestion { Code = target, Score = 1, Source = from, ByCode = true };
+				suggestion.CodeSources.Add(from);
 			}
 		}
 
-		// Si hay varias, se prefieren las partidas finales y, entre ellas, las más profundas (03.01.04 frente a 03.01.04.01.01).
-		List<Suggestion> codes = byCode.Values.Where(s => !byCode.Keys.Any(k => k != s.Code && PartidaCode.IsAncestorOrSelf(s.Code, k))).ToList();
-		if (codes.Count > 1 && budget != null && codes.Any(s => budget.Find(s.Code)?.IsLeaf == true))
+		// Un código que es ancestro de otro también citado (03.01.04 frente a 03.01.04.01.01) suma sus votos al más profundo.
+		foreach (Suggestion parent in evidence.Values.ToList())
 		{
-			codes = codes.Where(s => budget.Find(s.Code)?.IsLeaf == true).ToList();
+			List<Suggestion> deeper = evidence.Values.Where(o => o.Code != parent.Code && PartidaCode.IsAncestorOrSelf(parent.Code, o.Code)).ToList();
+			if (deeper.Count == 1)
+			{
+				deeper[0].CodeSources.AddRange(parent.CodeSources.Where(x => !deeper[0].CodeSources.Contains(x)));
+				evidence.Remove(parent.Code);
+			}
 		}
 
-		if (codes.Count > 0)
-		{
-			row.Suggestions = codes;
-			row.Candidates = codes.Select(s => s.Code).Take(4).ToList();
-			return codes.Count == 1 ? RowStatus.Sugerencia : RowStatus.Conflicto;
-		}
-
-		var byName = new Dictionary<string, Suggestion>(StringComparer.Ordinal);
 		if (matcher != null)
 		{
 			foreach ((string text, string source) in row.Texts)
@@ -328,26 +340,37 @@ public static class Classifier
 						continue;
 					}
 
-					if (!byName.TryGetValue(item.Code, out Suggestion existing) || existing.Score < score)
+					Suggestion suggestion = For(item.Code);
+					if (!suggestion.NameSources.Contains(source))
 					{
-						byName[item.Code] = new Suggestion { Code = item.Code, Score = score, Source = source };
+						suggestion.NameSources.Add(source);
 					}
+
+					suggestion.NameScore = Math.Max(suggestion.NameScore, score);
 				}
 			}
 		}
 
-		if (byName.Count > 0)
+		if (evidence.Count > 0)
 		{
-			// Las partidas finales antes que los títulos con el mismo parecido; empates (±5 %) quedan como opciones.
-			List<Suggestion> ranked = byName.Values
-				.OrderByDescending(s => s.Score)
-				.ThenByDescending(s => budget?.Find(s.Code)?.IsLeaf == true)
-				.ThenBy(s => s.Code, StringComparer.Ordinal)
+			foreach (Suggestion suggestion in evidence.Values)
+			{
+				// Respaldo: 1 por parámetro con el código + el mejor parecido de nombre + un poco por cada texto más que coincide.
+				suggestion.Score = suggestion.CodeSources.Count + suggestion.NameScore + 0.1 * Math.Max(0, suggestion.NameSources.Count - 1);
+				suggestion.ByCode = suggestion.CodeSources.Count > 0;
+				suggestion.Leaf = budget?.Find(suggestion.Code)?.IsLeaf ?? true;
+			}
+
+			// Las partidas finales antes que los títulos; luego por respaldo.
+			List<Suggestion> ranked = evidence.Values
+				.OrderByDescending(x => x.Leaf)
+				.ThenByDescending(x => x.Score)
+				.ThenBy(x => x.Code, StringComparer.Ordinal)
 				.ToList();
-			double best = ranked[0].Score;
-			List<Suggestion> close = ranked.Where(s => s.Score >= best - 0.05).Take(4).ToList();
+			Suggestion best = ranked[0];
+			List<Suggestion> close = ranked.Where(x => x.Leaf == best.Leaf && best.Score - x.Score < (best.ByCode ? 0.5 : 0.05)).Take(4).ToList();
 			row.Suggestions = ranked.Take(6).ToList();
-			row.Candidates = close.Select(s => s.Code).ToList();
+			row.Candidates = close.Select(x => x.Code).ToList();
 			return close.Count == 1 ? RowStatus.Sugerencia : RowStatus.Conflicto;
 		}
 

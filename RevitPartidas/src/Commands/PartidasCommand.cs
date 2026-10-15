@@ -95,8 +95,7 @@ internal sealed class PartidasHandler : IExternalEventHandler
 					break;
 				case PartidasAction.LoadAssemblyCodes:
 				{
-					string path = AssemblyCodes.WriteFile(Budget, Config.Levels);
-					OnMessage?.Invoke(Run(doc, "EMASY: cargar códigos de montaje", () => AssemblyCodes.Load(doc, path)));
+					OnMessage?.Invoke(Run(doc, "EMASY: cargar códigos de montaje", () => AssemblyCodes.Generate(doc, Budget, Config.Levels)));
 					break;
 				}
 				case PartidasAction.ParameterStatus:
