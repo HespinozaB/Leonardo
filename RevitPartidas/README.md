@@ -29,6 +29,16 @@ Para cada nivel se elige su origen:
 
 El filtro decide la rama. Si el código de montaje de un tipo es de la otra etapa, se usa la partida equivalente (misma descripción y unidad) de la etapa del elemento.
 
+### Tipos en varias etapas
+El Código de montaje es de **tipo** y la etapa es de **ejemplar**, así que un tipo con elementos en ETAPA 1 y ETAPA 2 no puede llevar el código correcto para las dos. Al pulsar **Leer valores** se avisa cuántos tipos están en esa situación.
+
+**Revisar tipos en varias etapas…** abre la lista de esos tipos, con cuántos elementos tiene cada etapa. Ahí eliges:
+* el **nombre del tipo nuevo**: **sufijo** o **prefijo**, con texto editable (`-{valor}` da "SUNAT_VEREDA…-ETAPA 1"; `{valor}-` da "ETAPA 1-SUNAT_VEREDA…");
+* **qué valor se queda con el tipo original**: el que tiene más elementos, o una etapa concreta;
+* si el tipo nuevo toma **el código de montaje de su etapa**: la partida equivalente con la misma descripción.
+
+**Duplicar marcados** duplica cada tipo y pasa a la copia los elementos de la otra etapa. Si ya existe un tipo con ese nombre en la familia, se reutiliza. Los elementos en grupos o vínculos que no se pueden cambiar se cuentan en el aviso. Todo se deshace con Ctrl+Z.
+
 ## Paso 3 · Revisión
 **Qué partida se le asigna a cada elemento:**
 1. El **Código de montaje** de su tipo, ajustado a la etapa. Si es un título, se sugiere por nombre la partida dentro de él.

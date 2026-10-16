@@ -60,6 +60,8 @@ internal sealed partial class PartidasForm : Form
 	private readonly DataGridView _rules = new DataGridView();
 	private readonly Button _suggest = new Button();
 	private readonly Button _readValues = new Button();
+	private readonly Button _sharedTypes = new Button();
+	private bool _sharedTypesSilent;
 	private readonly CheckBox _preferSource = new CheckBox();
 	private readonly Button _analyze = new Button();
 	private readonly Dictionary<int, string> _linkExamples = new Dictionary<int, string>();
@@ -81,6 +83,7 @@ internal sealed partial class PartidasForm : Form
 		_handler.OnSelection = ids => OnUi(() => SetRevitSelection(ids));
 		_handler.OnSuggestions = suggestions => OnUi(() => SetSuggestions(suggestions));
 		_handler.OnLinkValues = values => OnUi(() => SetLinkValues(values));
+		_handler.OnSharedTypes = types => OnUi(() => SetSharedTypes(types));
 		_handler.OnParameterStatus = (exist, message) => OnUi(() => SetParameterStatus(exist, message));
 		_handler.OnPicked = id => OnUi(() => SetPicked(id));
 		_handler.OnMessage = message => OnUi(() => Done(message));
@@ -358,6 +361,22 @@ internal sealed partial class PartidasForm : Form
 		_readValues.AutoSize = true;
 		_readValues.Click += Do(() => Raise(PartidasAction.LinkValues, "Leyendo los valores del modelo…"));
 		top.Controls.Add(_readValues);
+		_sharedTypes.Text = "Revisar tipos en varias etapas…";
+		_sharedTypes.AutoSize = true;
+		_sharedTypes.Font = new Font(Font, FontStyle.Bold);
+		_sharedTypes.Click += Do(() =>
+		{
+			if (TypeSplitter.FilterLevel(_config) < 0)
+			{
+				MessageBox.Show(this, "Pon un nivel con origen \"Parámetro de Revit\" (p. ej. nivel 2 = PR_Elemento_Etapa).", Text,
+					MessageBoxButtons.OK, MessageBoxIcon.Information);
+				return;
+			}
+
+			_sharedTypesSilent = false;
+			Raise(PartidasAction.FindSharedTypes, "Buscando tipos con elementos en varias etapas…");
+		});
+		top.Controls.Add(_sharedTypes);
 
 		_links.Dock = DockStyle.Fill;
 		_links.AllowUserToAddRows = false;
@@ -725,6 +744,64 @@ internal sealed partial class PartidasForm : Form
 		_linkValues = values;
 		Done(values.Count == 0 ? "No hay niveles con \"Parámetro de Revit\" como origen." : $"Valores leídos: {values.Sum(v => v.Value.Count)}.");
 		RefreshRules();
+		if (values.Count > 0)
+		{
+			// Aviso: tipos con elementos en varias etapas (no pueden llevar un único código de montaje).
+			_sharedTypesSilent = true;
+			Raise(PartidasAction.FindSharedTypes, "Valores leídos. Revisando tipos con elementos en varias etapas…");
+		}
+	}
+
+	private void SetSharedTypes(List<SharedType> types)
+	{
+		Done(null);
+		int level = TypeSplitter.FilterLevel(_config);
+		string parameter = level >= 0 ? _config.Link(level).ParameterName : string.Empty;
+		if (_sharedTypesSilent)
+		{
+			_sharedTypesSilent = false;
+			if (types.Count > 0)
+			{
+				_status.Text = $"Atención: {types.Count} tipo(s) tienen elementos en varios valores de {parameter}. Pulsa \"Revisar tipos en varias etapas…\".";
+				_sharedTypes.ForeColor = Color.Firebrick;
+			}
+			else
+			{
+				_status.Text = $"Valores leídos. Ningún tipo tiene elementos en más de un valor de {parameter}.";
+			}
+
+			return;
+		}
+
+		if (types.Count == 0)
+		{
+			_status.Text = $"Ningún tipo tiene elementos en más de un valor de {parameter}.";
+			_sharedTypes.ForeColor = SystemColors.ControlText;
+			return;
+		}
+
+		LevelLink link = _config.Link(level);
+		Dictionary<string, string> map = LevelMap(level + 1);
+		string CodeFor(string montaje, string value)
+		{
+			string code = PartidaCode.Normalize(montaje);
+			string branch = ElementScanner.MapValue(link, map, value, out _);
+			if (code == null || string.IsNullOrEmpty(branch))
+			{
+				return null;
+			}
+
+			return PartidaCode.IsAncestorOrSelf(branch, code) ? code : _matcher?.Equivalent(code, branch)?.Code;
+		}
+
+		using var dialog = new SharedTypesForm(types, parameter, CodeFor);
+		if (dialog.ShowDialog(this) == DialogResult.OK && dialog.Requests.Count > 0)
+		{
+			_handler.SplitRequests = dialog.Requests;
+			_scanSignature = null;
+			_sharedTypes.ForeColor = SystemColors.ControlText;
+			Raise(PartidasAction.SplitTypes, "Duplicando tipos y cambiando sus elementos…");
+		}
 	}
 
 	/// <summary>Una fila por valor del parámetro de regla: el código que le toca (automático por descripción, elegido o ignorado).</summary>

@@ -14,6 +14,8 @@ internal enum PartidasAction
 	Scan,
 	SuggestLinks,
 	LinkValues,
+	FindSharedTypes,
+	SplitTypes,
 	LoadAssemblyCodes,
 	ParameterStatus,
 	CreateParameters,
@@ -58,6 +60,11 @@ internal sealed class PartidasHandler : IExternalEventHandler
 
 	public Action<Dictionary<int, Dictionary<string, int>>> OnLinkValues;
 
+	public Action<List<SharedType>> OnSharedTypes;
+
+	/// <summary>Para SplitTypes: tipos a duplicar por valor del filtro.</summary>
+	public List<SplitRequest> SplitRequests = new List<SplitRequest>();
+
 	public Action<List<long>> OnSelection;
 
 	public Action<List<LinkSuggestion>> OnSuggestions;
@@ -92,6 +99,12 @@ internal sealed class PartidasHandler : IExternalEventHandler
 					break;
 				case PartidasAction.LinkValues:
 					OnLinkValues?.Invoke(ElementScanner.LinkValueCounts(doc, Config));
+					break;
+				case PartidasAction.FindSharedTypes:
+					OnSharedTypes?.Invoke(TypeSplitter.Find(doc, Config));
+					break;
+				case PartidasAction.SplitTypes:
+					OnMessage?.Invoke(Run(doc, "EMASY: separar tipos por etapa", () => TypeSplitter.Split(doc, SplitRequests)));
 					break;
 				case PartidasAction.LoadAssemblyCodes:
 				{

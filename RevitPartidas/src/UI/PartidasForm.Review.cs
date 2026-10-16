@@ -813,7 +813,7 @@ internal sealed partial class PartidasForm
 	private void UpdateButtons()
 	{
 		bool idle = !_busy;
-		foreach (Control control in new Control[] { _loadBudget, _createParams, _loadMontaje, _suggest, _readValues, _analyze, _rescan, _writePending, _clear, _selectRows, _useRevitSelection, _export })
+		foreach (Control control in new Control[] { _loadBudget, _createParams, _loadMontaje, _suggest, _readValues, _sharedTypes, _analyze, _rescan, _writePending, _clear, _selectRows, _useRevitSelection, _export })
 		{
 			control.Enabled = idle;
 		}
