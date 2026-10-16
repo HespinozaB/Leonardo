@@ -113,14 +113,23 @@ public static class TypeSplitter
 		return result;
 	}
 
-	/// <summary>Duplica los tipos y cambia sus elementos. Debe llamarse dentro de una transacción.</summary>
+	/// <summary>Elementos que se intentan cambiar juntos cuando el cambio en bloque falla.</summary>
+	private const int BatchSize = 200;
+
+	/// <summary>
+	/// Duplica los tipos y cambia sus elementos. Debe llamarse dentro de una transacción. Para ir rápido: los tipos que ya existen
+	/// se buscan en un índice armado una sola vez, y los elementos se cambian de tipo en bloque (una sola regeneración por tipo).
+	/// </summary>
 	public static string Split(Document doc, IList<SplitRequest> requests)
 	{
+		DateTime start = DateTime.Now;
 		int created = 0;
 		int reused = 0;
 		int moved = 0;
 		int failedTypes = 0;
 		int failedElements = 0;
+		int inGroups = 0;
+		Dictionary<(Type, string, string), ElementType> index = TypeIndex(doc);
 		foreach (SplitRequest request in requests)
 		{
 			if (!(doc.GetElement(new ElementId(request.TypeId)) is ElementType original))
@@ -129,8 +138,9 @@ public static class TypeSplitter
 				continue;
 			}
 
-			ElementType target = Existing(doc, original, request.NewName);
-			if (target != null)
+			string name = request.NewName.Trim();
+			var key = (original.GetType(), original.FamilyName, name);
+			if (index.TryGetValue(key, out ElementType target))
 			{
 				reused++;
 			}
@@ -138,7 +148,8 @@ public static class TypeSplitter
 			{
 				try
 				{
-					target = original.Duplicate(request.NewName.Trim());
+					target = original.Duplicate(name);
+					index[key] = target;
 					created++;
 				}
 				catch (Exception)
@@ -170,61 +181,111 @@ public static class TypeSplitter
 				}
 			}
 
+			// Se descartan antes los que no pueden cambiar (en grupos) o ya tienen el tipo: así el bloque no falla por ellos.
+			var ids = new List<ElementId>();
 			foreach (long id in request.Elements)
 			{
 				Element element = doc.GetElement(new ElementId(id));
-				try
+				if (element == null || element.GetTypeId() == target.Id)
 				{
-					if (element != null && element.GetTypeId() != target.Id)
-					{
-						element.ChangeTypeId(target.Id);
-						moved++;
-					}
+					continue;
 				}
-				catch (Exception)
+
+				if (element.GroupId != ElementId.InvalidElementId)
 				{
-					failedElements++;
+					inGroups++;
+					continue;
 				}
+
+				ids.Add(element.Id);
 			}
+
+			int changed = ChangeTypes(doc, ids, target.Id);
+			moved += changed;
+			failedElements += ids.Count - changed;
 		}
 
 		string text = $"Tipos nuevos: {created}" + (reused > 0 ? $" (y {reused} que ya existían con ese nombre)" : string.Empty) +
-			$". Elementos pasados a su tipo de etapa: {moved}.";
+			$". Elementos pasados a su tipo de etapa: {moved}, en {(DateTime.Now - start).TotalSeconds:0.0} s.";
 		if (failedTypes > 0)
 		{
 			text += $" {failedTypes} tipo(s) no se pudieron duplicar.";
 		}
 
+		if (inGroups > 0)
+		{
+			text += $" {inGroups} elemento(s) están en grupos y no se cambiaron (edita el grupo).";
+		}
+
 		if (failedElements > 0)
 		{
-			text += $" {failedElements} elemento(s) no se pudieron cambiar de tipo (en grupos, vínculos o bloqueados).";
+			text += $" {failedElements} elemento(s) no se pudieron cambiar de tipo.";
 		}
 
 		return text + " Vuelve a analizar en el paso 3.";
 	}
 
-	/// <summary>Un tipo de la misma familia (o de la misma clase, si es de sistema) que ya tiene ese nombre.</summary>
-	private static ElementType Existing(Document doc, ElementType original, string name)
+	/// <summary>Cambia de tipo todos a la vez; si Revit rechaza el bloque, por tandas y, dentro de una tanda que falla, uno a uno.</summary>
+	private static int ChangeTypes(Document doc, List<ElementId> ids, ElementId typeId)
 	{
-		name = name.Trim();
-		if (original is FamilySymbol symbol)
+		if (ids.Count == 0)
 		{
-			return symbol.Family.GetFamilySymbolIds().Select(doc.GetElement).OfType<ElementType>()
-				.FirstOrDefault(t => t.Name == name);
+			return 0;
 		}
 
-		IEnumerable<Element> candidates;
+		if (TryChange(doc, ids, typeId))
+		{
+			return ids.Count;
+		}
+
+		int changed = 0;
+		for (int i = 0; i < ids.Count; i += BatchSize)
+		{
+			List<ElementId> batch = ids.GetRange(i, Math.Min(BatchSize, ids.Count - i));
+			if (batch.Count > 1 && TryChange(doc, batch, typeId))
+			{
+				changed += batch.Count;
+				continue;
+			}
+
+			foreach (ElementId id in batch)
+			{
+				if (TryChange(doc, new List<ElementId> { id }, typeId))
+				{
+					changed++;
+				}
+			}
+		}
+
+		return changed;
+	}
+
+	private static bool TryChange(Document doc, ICollection<ElementId> ids, ElementId typeId)
+	{
 		try
 		{
-			candidates = new FilteredElementCollector(doc).OfClass(original.GetType());
+			Element.ChangeTypeId(doc, ids, typeId);
+			return true;
 		}
 		catch (Exception)
 		{
-			// Algunas clases no admiten el filtro por clase: se revisan todos los tipos.
-			candidates = new FilteredElementCollector(doc).WhereElementIsElementType();
+			return false;
+		}
+	}
+
+	/// <summary>Todos los tipos del modelo por (clase, familia, nombre), en un solo recorrido.</summary>
+	private static Dictionary<(Type, string, string), ElementType> TypeIndex(Document doc)
+	{
+		var index = new Dictionary<(Type, string, string), ElementType>();
+		foreach (ElementType type in new FilteredElementCollector(doc).WhereElementIsElementType().OfType<ElementType>())
+		{
+			var key = (type.GetType(), type.FamilyName ?? string.Empty, type.Name ?? string.Empty);
+			if (!index.ContainsKey(key))
+			{
+				index[key] = type;
+			}
 		}
 
-		return candidates.OfType<ElementType>()
-			.FirstOrDefault(t => t.Name == name && t.FamilyName == original.FamilyName && t.GetType() == original.GetType());
+		return index;
 	}
 }

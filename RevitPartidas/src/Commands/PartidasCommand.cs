@@ -104,7 +104,7 @@ internal sealed class PartidasHandler : IExternalEventHandler
 					OnSharedTypes?.Invoke(TypeSplitter.Find(doc, Config));
 					break;
 				case PartidasAction.SplitTypes:
-					OnMessage?.Invoke(Run(doc, "EMASY: separar tipos por etapa", () => TypeSplitter.Split(doc, SplitRequests)));
+					OnMessage?.Invoke(Run(doc, "EMASY: separar tipos por etapa", () => TypeSplitter.Split(doc, SplitRequests), suppressWarnings: true));
 					break;
 				case PartidasAction.LoadAssemblyCodes:
 				{
@@ -155,12 +155,38 @@ internal sealed class PartidasHandler : IExternalEventHandler
 
 	public string GetName() => "EMASY · Partidas";
 
-	private static string Run(Document doc, string name, Func<string> body)
+	private static string Run(Document doc, string name, Func<string> body, bool suppressWarnings = false)
 	{
 		using var transaction = new Transaction(doc, name);
+		if (suppressWarnings)
+		{
+			// Los avisos (solapes, uniones…) de miles de elementos cambiados ralentizan la confirmación y abren diálogos.
+			FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
+			options.SetFailuresPreprocessor(new WarningSwallower());
+			options.SetForcedModalHandling(false);
+			transaction.SetFailureHandlingOptions(options);
+		}
+
 		transaction.Start();
 		string message = body();
 		return transaction.Commit() == TransactionStatus.Committed ? message : "Revit rechazó la transacción: no se guardaron cambios.";
+	}
+
+	/// <summary>Borra las advertencias (no los errores) al confirmar.</summary>
+	private sealed class WarningSwallower : IFailuresPreprocessor
+	{
+		public FailureProcessingResult PreprocessFailures(FailuresAccessor accessor)
+		{
+			foreach (FailureMessageAccessor failure in accessor.GetFailureMessages())
+			{
+				if (failure.GetSeverity() == FailureSeverity.Warning)
+				{
+					accessor.DeleteWarning(failure);
+				}
+			}
+
+			return FailureProcessingResult.Continue;
+		}
 	}
 
 	private void Write(Document doc)
