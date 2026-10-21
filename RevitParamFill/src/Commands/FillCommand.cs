@@ -33,6 +33,9 @@ internal sealed class ModelCatalog
 
 	public List<string> LineStyles = new List<string>();
 
+	/// <summary>Parámetros de texto de las regiones rellenas (de ejemplar y de tipo), para nombrar los sectores.</summary>
+	public List<string> RegionParameters = new List<string>();
+
 	/// <summary>DWG en el modelo: id, nombre, vista donde está (o -1 si es de modelo), vinculado.</summary>
 	public List<(long Id, string Name, long ViewId, bool Linked)> Dwgs = new List<(long, string, long, bool)>();
 }
@@ -214,6 +217,29 @@ internal sealed class FillHandler : IExternalEventHandler
 			.OrderBy(v => v.Item2, StringComparer.CurrentCultureIgnoreCase).ToList();
 		catalog.RegionTypes = new FilteredElementCollector(doc).OfClass(typeof(FilledRegionType)).Select(t => t.Name)
 			.Distinct().OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
+		var regionParameters = new HashSet<string>(StringComparer.Ordinal);
+		var regionTypes = new HashSet<long>();
+		foreach (FilledRegion region in new FilteredElementCollector(doc).OfClass(typeof(FilledRegion)).Cast<FilledRegion>().Take(300))
+		{
+			var owners = new List<Element> { region };
+			if (regionTypes.Add(region.GetTypeId().Value) && doc.GetElement(region.GetTypeId()) is Element regionType)
+			{
+				owners.Add(regionType);
+			}
+
+			foreach (Parameter parameter in owners.SelectMany(o => o.Parameters.Cast<Parameter>()))
+			{
+				if (parameter.Definition != null && parameter.StorageType != StorageType.None && parameter.StorageType != StorageType.ElementId &&
+					!(parameter.Definition is InternalDefinition internalDefinition &&
+						(internalDefinition.BuiltInParameter == BuiltInParameter.ALL_MODEL_MARK ||
+						 internalDefinition.BuiltInParameter == BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)))
+				{
+					regionParameters.Add(parameter.Definition.Name);
+				}
+			}
+		}
+
+		catalog.RegionParameters = regionParameters.OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
 		Category lines = doc.Settings.Categories.get_Item(BuiltInCategory.OST_Lines);
 		if (lines != null)
 		{

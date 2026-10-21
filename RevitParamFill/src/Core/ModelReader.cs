@@ -69,6 +69,28 @@ public sealed class ModelReader
 			point = (box.Min + box.Max) / 2;
 		}
 
+		if (box != null)
+		{
+			info.BoxMinX = box.Min.X;
+			info.BoxMinY = box.Min.Y;
+			info.BoxMaxX = box.Max.X;
+			info.BoxMaxY = box.Max.Y;
+			info.HasBox = true;
+		}
+
+		// Lineales: puntos cada ~15 cm a lo largo de la curva (para repartir su longitud entre sectores).
+		if (element.Location is LocationCurve curveLocation && curveLocation.Curve != null && curveLocation.Curve.IsBound)
+		{
+			Curve curve = curveLocation.Curve;
+			int count = (int)Math.Max(2, Math.Min(400, Math.Ceiling(curve.Length / 0.5)));
+			info.CurvePoints = new List<(double X, double Y)>(count);
+			for (int i = 0; i < count; i++)
+			{
+				XYZ p = curve.Evaluate((double)i / (count - 1), true);
+				info.CurvePoints.Add((p.X, p.Y));
+			}
+		}
+
 		if (point != null)
 		{
 			info.X = point.X;

@@ -52,6 +52,14 @@ public sealed class ElementInfo
 
 	public bool HasLocation;
 
+	/// <summary>Huella en planta: la caja XY del elemento.</summary>
+	public double BoxMinX, BoxMinY, BoxMaxX, BoxMaxY;
+
+	public bool HasBox;
+
+	/// <summary>Elementos lineales (muros, vigas, barandas): puntos repartidos a lo largo de su curva.</summary>
+	public List<(double X, double Y)> CurvePoints;
+
 	public string FamilyType => Family.Length > 0 ? Family + " : " + TypeName : TypeName;
 }
 

@@ -8,7 +8,7 @@
     <PlatformTarget>AnyCPU</PlatformTarget>
     <LangVersion>11.0</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Product>EMASY Rellenar</Product>
     <Company>EMASY</Company>
     <Description>Instalador de EMASY Rellenar para Revit 2024</Description>

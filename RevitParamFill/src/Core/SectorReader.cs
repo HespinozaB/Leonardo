@@ -31,6 +31,7 @@ public static class SectorReader
 		var texts = new FilteredElementCollector(doc, view.Id).OfClass(typeof(TextNote)).Cast<TextNote>()
 			.Select(t => (Text: FirstLine(t.Text), t.Coord.X, t.Coord.Y)).Where(t => t.Text.Length > 0).ToList();
 		var raw = new List<(List<(double, double)> Points, string TypeName, string Comment, long Id)>();
+		var reader = new ModelReader(doc);
 		if (set.UseFilledRegions)
 		{
 			foreach (FilledRegion region in new FilteredElementCollector(doc, view.Id).OfClass(typeof(FilledRegion)).Cast<FilledRegion>())
@@ -46,8 +47,13 @@ public static class SectorReader
 					.OrderByDescending(p => new Polygon(string.Empty, p).Area).FirstOrDefault();
 				if (outer != null)
 				{
-					string comment = region.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.AsString() ?? string.Empty;
-					raw.Add((outer, typeName, comment, region.Id.Value));
+					// "Comment" lleva el valor del parámetro elegido para nombrar (Comentarios, Marca u otro).
+					string label = set.NameFrom == SectorName.Parametro && set.NameParameter.Length > 0
+						? set.NameParameter == SectorSet.MarkToken
+							? reader.Value(region.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)) ?? string.Empty
+							: reader.Value(region.LookupParameter(set.NameParameter)) ?? reader.Value(reader.TypeOf(region)?.LookupParameter(set.NameParameter)) ?? string.Empty
+						: region.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.AsString() ?? string.Empty;
+					raw.Add((outer, typeName, label, region.Id.Value));
 				}
 			}
 		}
@@ -77,7 +83,9 @@ public static class SectorReader
 		}
 
 		Name(set, raw, texts);
-		return $"{set.Name}: {set.Sectors.Count} sector(es) leídos de {(set.UseFilledRegions ? "regiones rellenas" : "líneas de detalle")} en \"{view.Name}\".";
+		int distinct = set.Sectors.Select(p => p.Name).Distinct().Count();
+		return $"{set.Name}: {set.Sectors.Count} región(es) leídas de {(set.UseFilledRegions ? "regiones rellenas" : "líneas de detalle")} en \"{view.Name}\", " +
+			$"{distinct} sector(es) distintos" + (distinct < set.Sectors.Count ? " (las regiones con el mismo nombre forman un solo sector)." : ".");
 	}
 
 	private static string ReadDwg(Document doc, View view, SectorSet set)
@@ -204,7 +212,7 @@ public static class SectorReader
 				name = texts.Where(t => polygon.Contains(t.X, t.Y))
 					.OrderBy(t => Math.Pow(t.X - cx, 2) + Math.Pow(t.Y - cy, 2)).Select(t => t.Text).FirstOrDefault();
 			}
-			else if (set.NameFrom == SectorName.Comentarios)
+			else if (set.NameFrom == SectorName.Comentarios || set.NameFrom == SectorName.Parametro)
 			{
 				name = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
 			}

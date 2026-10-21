@@ -97,6 +97,120 @@ public static class SectorIndex
 	public static Polygon Find(IEnumerable<Polygon> sectors, double x, double y) =>
 		sectors.Where(s => s.Contains(x, y, 0.01)).OrderBy(s => s.Area).FirstOrDefault();
 
+	/// <summary>
+	/// El sector con la mayor parte del elemento: en los lineales, la fracción de su longitud dentro de cada sector; en el resto,
+	/// el área de su caja en planta recortada por cada sector. Varios polígonos con el mismo nombre suman. Si no toca ninguno,
+	/// se usa su punto central. Devuelve el nombre, su porcentaje (0–1) y el reparto entre sectores.
+	/// </summary>
+	public static (string Name, double Share, List<(string Name, double Share)> All) Best(IList<Polygon> sectors, ElementInfo element)
+	{
+		var shares = new Dictionary<string, double>(StringComparer.Ordinal);
+		if (element.CurvePoints != null && element.CurvePoints.Count > 1)
+		{
+			foreach ((double x, double y) in element.CurvePoints)
+			{
+				Polygon sector = Find(sectors, x, y);
+				if (sector != null)
+				{
+					shares[sector.Name] = (shares.TryGetValue(sector.Name, out double n) ? n : 0) + 1.0 / element.CurvePoints.Count;
+				}
+			}
+		}
+		else if (element.HasBox && element.BoxMaxX - element.BoxMinX > 1e-6 && element.BoxMaxY - element.BoxMinY > 1e-6)
+		{
+			double boxArea = (element.BoxMaxX - element.BoxMinX) * (element.BoxMaxY - element.BoxMinY);
+			foreach (Polygon sector in sectors)
+			{
+				if (sector.MaxX < element.BoxMinX || sector.MinX > element.BoxMaxX || sector.MaxY < element.BoxMinY || sector.MinY > element.BoxMaxY)
+				{
+					continue;
+				}
+
+				double overlap = ClippedArea(sector.Points, element.BoxMinX, element.BoxMinY, element.BoxMaxX, element.BoxMaxY);
+				if (overlap > 1e-9)
+				{
+					shares[sector.Name] = (shares.TryGetValue(sector.Name, out double a) ? a : 0) + overlap / boxArea;
+				}
+			}
+		}
+
+		if (shares.Count == 0)
+		{
+			Polygon center = element.HasLocation ? Find(sectors, element.X, element.Y) : null;
+			return center == null ? (null, 0, new List<(string, double)>()) : (center.Name, 1, new List<(string, double)> { (center.Name, 1) });
+		}
+
+		List<(string Name, double Share)> ordered = shares.Select(p => (p.Key, Math.Min(1, p.Value))).OrderByDescending(p => p.Item2).ToList();
+		return (ordered[0].Name, ordered[0].Share, ordered);
+	}
+
+	/// <summary>Área del polígono recortado por un rectángulo (Sutherland–Hodgman: vale para polígonos cóncavos).</summary>
+	public static double ClippedArea(List<(double X, double Y)> polygon, double minX, double minY, double maxX, double maxY)
+	{
+		List<(double X, double Y)> points = polygon;
+		points = Clip(points, p => p.X >= minX, (a, b) => Cross(a, b, minX, true));
+		points = Clip(points, p => p.X <= maxX, (a, b) => Cross(a, b, maxX, true));
+		points = Clip(points, p => p.Y >= minY, (a, b) => Cross(a, b, minY, false));
+		points = Clip(points, p => p.Y <= maxY, (a, b) => Cross(a, b, maxY, false));
+		if (points.Count < 3)
+		{
+			return 0;
+		}
+
+		double sum = 0;
+		for (int i = 0, j = points.Count - 1; i < points.Count; j = i++)
+		{
+			sum += (points[j].X * points[i].Y) - (points[i].X * points[j].Y);
+		}
+
+		return Math.Abs(sum) / 2;
+	}
+
+	private static List<(double X, double Y)> Clip(List<(double X, double Y)> input, Func<(double X, double Y), bool> inside,
+		Func<(double X, double Y), (double X, double Y), (double X, double Y)> cross)
+	{
+		var output = new List<(double X, double Y)>();
+		if (input.Count == 0)
+		{
+			return output;
+		}
+
+		(double X, double Y) previous = input[input.Count - 1];
+		foreach ((double X, double Y) current in input)
+		{
+			if (inside(current))
+			{
+				if (!inside(previous))
+				{
+					output.Add(cross(previous, current));
+				}
+
+				output.Add(current);
+			}
+			else if (inside(previous))
+			{
+				output.Add(cross(previous, current));
+			}
+
+			previous = current;
+		}
+
+		return output;
+	}
+
+	/// <summary>Punto donde el segmento a-b cruza la recta x = value (vertical) o y = value.</summary>
+	private static (double X, double Y) Cross((double X, double Y) a, (double X, double Y) b, double value, bool vertical)
+	{
+		if (vertical)
+		{
+			double t = Math.Abs(b.X - a.X) < 1e-12 ? 0 : (value - a.X) / (b.X - a.X);
+			return (value, a.Y + (t * (b.Y - a.Y)));
+		}
+
+		double u = Math.Abs(b.Y - a.Y) < 1e-12 ? 0 : (value - a.Y) / (b.Y - a.Y);
+		return (a.X + (u * (b.X - a.X)), value);
+	}
+
 	/// <summary>El sector más cercano (para deducir cuando el punto cae fuera de todos).</summary>
 	public static (Polygon Sector, double Distance) Nearest(IEnumerable<Polygon> sectors, double x, double y)
 	{

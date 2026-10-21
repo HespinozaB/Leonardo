@@ -86,12 +86,21 @@ Los deducidos solo se escriben si los aceptas.
 ## 3 · Sectorización
 Conjuntos de sectores con nombre, por ejemplo "Edificio" o "Local"; las reglas los usan por ese nombre. Para cada conjunto:
 * **Trazo en planta**: en la vista elegida, las **regiones rellenas** (de un tipo o de todos) o los **lazos de líneas de detalle** (de un estilo o de todos).
-* **DWG vinculado o importado** de esa vista: las **polilíneas cerradas** (o líneas que forman lazos) de una **capa**. **Leer capas** las lista. Si el DWG está importado (no vinculado), indica su archivo para leer los textos.
-* **Nombre del sector**: el **texto que cae dentro** (nota de texto de Revit o texto del DWG; si hay varios, el más cercano al centro), el **tipo de región o capa**, o los **Comentarios** de la región.
+* **DWG vinculado o importado** de esa vista: las **polilíneas cerradas** (o líneas que forman lazos) de una **capa**. **Leer capas** las lista. Si el DWG está importado, indica su archivo para leer los textos.
+* **Nombre del sector desde**:
+  - el **texto que cae dentro** (nota de texto de Revit o texto del DWG);
+  - el **nombre de tipo** de la región o la **capa** del DWG;
+  - y, para regiones rellenas, la **Marca**, los **Comentarios** o **cualquier parámetro** de la región, de ejemplar o de tipo.
+
+  Varias regiones con el mismo valor (p. ej. Marca "G10") forman **un solo sector**.
 * **Leer sectores** muestra la lista con su área. Los que no tienen nombre salen en rojo. **Ver en Revit** selecciona el trazo.
 * Opción: **solo los elementos del nivel de la vista**. Si no se marca, el sector vale para todos los niveles.
+* Opción, activada por defecto: **si un elemento cruza varios sectores, se le asigna el que contiene la mayor parte de su área**. Si está un 70 % en G10 y un 30 % en G11, queda en G10, y el motivo indica el reparto.
+  - En los **elementos lineales** (muros, vigas, barandas) se mide la **longitud** dentro de cada sector.
+  - En el resto se mide el **área de su huella** en planta (su caja).
+  - Si se desmarca la opción, solo cuenta el punto central del elemento.
 
-Cada elemento cae en el sector que contiene su punto en planta: su punto de inserción, el medio de su línea o el centro de su caja. Si cae en varios sectores, gana el más pequeño.
+Si el elemento cae fuera de todos los sectores, se propone el **más cercano**, que tienes que aceptar en la hoja 2.
 
 ## 4 · Libre
 * **Masivo**: un parámetro y un valor para la **selección actual de Revit** (pulsa *Leer selección*), las **filas marcadas en la tabla** (hoja 2) o **toda una categoría**.

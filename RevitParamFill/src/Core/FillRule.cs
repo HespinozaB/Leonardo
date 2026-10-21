@@ -147,7 +147,10 @@ public enum SectorName
 	Tipo,
 
 	/// <summary>El parámetro Comentarios de la región rellena.</summary>
-	Comentarios
+	Comentarios,
+
+	/// <summary>Cualquier parámetro de la región rellena (ejemplar o tipo): Marca, un código, etc.</summary>
+	Parametro
 }
 
 /// <summary>Un conjunto de sectores (p. ej. "Edificio" o "Local") dibujado en una planta.</summary>
@@ -189,6 +192,20 @@ public sealed class SectorSet
 	/// <summary>Solo los elementos del nivel de la vista (si no, el sector vale para todos los niveles).</summary>
 	[DataMember(Order = 10)]
 	public bool OnlyViewLevel;
+
+	/// <summary>NameParameter para la Marca de la región (se lee por su parámetro interno, en cualquier idioma de Revit).</summary>
+	public const string MarkToken = "@MARCA";
+
+	/// <summary>Para NameFrom = Parametro: el parámetro de la región que da el nombre (p. ej. "@MARCA" o "SUNAT_Código").</summary>
+	[DataMember(Order = 11)]
+	public string NameParameter = string.Empty;
+
+	/// <summary>
+	/// false (por defecto): si un elemento cruza varios sectores, se asigna el que contiene la mayor parte de su área (o longitud).
+	/// true: solo cuenta el punto central del elemento.
+	/// </summary>
+	[DataMember(Order = 12)]
+	public bool CenterOnly;
 
 	/// <summary>Sectores leídos (no se guardan: se leen del modelo).</summary>
 	public List<Polygon> Sectors = new List<Polygon>();
@@ -270,6 +287,7 @@ public sealed class RuleSet
 			sectors.Filter ??= string.Empty;
 			sectors.Layer ??= string.Empty;
 			sectors.DwgPath ??= string.Empty;
+			sectors.NameParameter ??= string.Empty;
 			sectors.Sectors = new List<Polygon>();
 		}
 

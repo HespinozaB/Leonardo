@@ -101,7 +101,8 @@ public static class Filler
 					continue;
 				}
 
-				string value = rule.Source == SourceKind.Sector ? SectorValue(rule, sectorSets, info, doc) : reader.Read(element, rule);
+				string sectorReason = null;
+				string value = rule.Source == SourceKind.Sector ? SectorValue(rule, sectorSets, info, doc, out sectorReason) : reader.Read(element, rule);
 				value = rule.Transform(value);
 				if (value != null)
 				{
@@ -119,7 +120,7 @@ public static class Filler
 					{
 						entry.Status = FillStatus.Directo;
 						entry.Accepted = true;
-						entry.Reason = FillRule.SourceText(rule.Source) + (rule.Source == SourceKind.Parametro ? " " + rule.Detail : string.Empty);
+						entry.Reason = sectorReason ?? FillRule.SourceText(rule.Source) + (rule.Source == SourceKind.Parametro ? " " + rule.Detail : string.Empty);
 					}
 				}
 				else if (entry.Current.Length > 0 && !rule.Overwrite)
@@ -162,8 +163,10 @@ public static class Filler
 		return plan;
 	}
 
-	private static string SectorValue(FillRule rule, Dictionary<string, SectorSet> sets, ElementInfo info, Document doc)
+	/// <summary>El sector del elemento y el motivo (con el reparto si cruza varios sectores).</summary>
+	private static string SectorValue(FillRule rule, Dictionary<string, SectorSet> sets, ElementInfo info, Document doc, out string reason)
 	{
+		reason = null;
 		if (!info.HasLocation || !sets.TryGetValue(rule.Detail, out SectorSet set))
 		{
 			return null;
@@ -174,7 +177,19 @@ public static class Filler
 			return null;
 		}
 
-		return SectorIndex.Find(set.Sectors, info.X, info.Y)?.Name;
+		if (set.CenterOnly)
+		{
+			return SectorIndex.Find(set.Sectors, info.X, info.Y)?.Name;
+		}
+
+		var (name, share, all) = SectorIndex.Best(set.Sectors, info);
+		if (name != null && share < 0.995)
+		{
+			string others = string.Join(", ", all.Skip(1).Take(3).Select(a => $"{a.Name} {a.Share:P0}"));
+			reason = $"Sector con mayor área: {name} ({share:P0}{(others.Length > 0 ? "; también " + others : string.Empty)}).";
+		}
+
+		return name;
 	}
 
 	/// <summary>Escribe los valores (elemento, parámetro, valor). Los de tipo se escriben una vez en el tipo. Dentro de una transacción.</summary>

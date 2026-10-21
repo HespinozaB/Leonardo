@@ -14,7 +14,8 @@ internal sealed partial class FillForm
 {
 	private const string AllItems = "(todos)";
 
-	private static readonly string[] NameFromText = { "Texto que cae dentro", "Tipo de región / capa del DWG", "Comentarios de la región" };
+	/// <summary>Opciones de "Nombre del sector desde" (dependen del origen y de los parámetros de las regiones del modelo).</summary>
+	private List<(SectorName Kind, string Parameter, string Text)> _nameOptions = new List<(SectorName, string, string)>();
 
 	private readonly ListBox _sectorList = new ListBox();
 	private readonly TextBox _secName = new TextBox();
@@ -29,6 +30,7 @@ internal sealed partial class FillForm
 	private readonly TextBox _secPath = new TextBox();
 	private readonly ComboBox _secNameFrom = new ComboBox();
 	private readonly CheckBox _secOnlyLevel = new CheckBox();
+	private readonly CheckBox _secLargest = new CheckBox();
 	private readonly ListView _secResult = new ListView();
 	private readonly Panel _sketchPanel = new FlowLayoutPanel();
 	private readonly Panel _dwgPanel = new FlowLayoutPanel();
@@ -111,9 +113,16 @@ internal sealed partial class FillForm
 		form.Controls.Add(_secView);
 		form.Controls.Add(NewLabel("   Nombre del sector desde:"));
 		_secNameFrom.DropDownStyle = ComboBoxStyle.DropDownList;
-		_secNameFrom.Width = 220;
-		_secNameFrom.Items.AddRange(NameFromText);
-		_secNameFrom.SelectedIndexChanged += (s, e) => Safe(() => Update(set => set.NameFrom = (SectorName)Math.Max(0, _secNameFrom.SelectedIndex)));
+		_secNameFrom.Width = 300;
+		_secNameFrom.SelectedIndexChanged += (s, e) => Safe(() => Update(set =>
+		{
+			int index = _secNameFrom.SelectedIndex;
+			if (index >= 0 && index < _nameOptions.Count)
+			{
+				set.NameFrom = _nameOptions[index].Kind;
+				set.NameParameter = _nameOptions[index].Parameter;
+			}
+		}));
 		form.Controls.Add(_secNameFrom);
 		form.SetFlowBreak(_secNameFrom, true);
 
@@ -174,6 +183,11 @@ internal sealed partial class FillForm
 		_secOnlyLevel.CheckedChanged += (s, e) => Safe(() => Update(set => set.OnlyViewLevel = _secOnlyLevel.Checked));
 		form.Controls.Add(_secOnlyLevel);
 		form.SetFlowBreak(_secOnlyLevel, true);
+		_secLargest.Text = "Si un elemento cruza varios sectores, asignar el que contiene la mayor parte de su área (si no, solo cuenta su punto central)";
+		_secLargest.AutoSize = true;
+		_secLargest.CheckedChanged += (s, e) => Safe(() => Update(set => set.CenterOnly = !_secLargest.Checked));
+		form.Controls.Add(_secLargest);
+		form.SetFlowBreak(_secLargest, true);
 		form.Controls.Add(NewButton("Leer sectores", Do(() => RaiseSector(FillAction.ReadSectors, "Leyendo sectores…")), bold: true));
 		form.Controls.Add(NewButton("Ver en Revit", Do(() =>
 		{
@@ -264,8 +278,8 @@ internal sealed partial class FillForm
 			_secDwgSource.Checked = set != null && set.Source == SectorSource.Dwg;
 			_secRegions.Checked = set == null || set.UseFilledRegions;
 			_secLines.Checked = set != null && !set.UseFilledRegions;
-			_secNameFrom.SelectedIndex = (int)(set?.NameFrom ?? SectorName.Texto);
 			_secOnlyLevel.Checked = set?.OnlyViewLevel ?? false;
+			_secLargest.Checked = !(set?.CenterOnly ?? false);
 			_secPath.Text = set?.DwgPath ?? string.Empty;
 			_secLayer.Text = set == null || set.Layer.Length == 0 ? AllItems : set.Layer;
 			int view = set == null ? -1 : _catalog.Views.FindIndex(v => v.Id == set.ViewId);
@@ -281,6 +295,40 @@ internal sealed partial class FillForm
 		ShowSectorResult();
 	}
 
+	/// <summary>Texto, tipo/capa y, para regiones rellenas: Marca, Comentarios y cada parámetro de las regiones del modelo.</summary>
+	private void RefreshNameOptions()
+	{
+		SectorSet set = Current;
+		_nameOptions = new List<(SectorName, string, string)>
+		{
+			(SectorName.Texto, string.Empty, "Texto que cae dentro"),
+			(SectorName.Tipo, string.Empty, set != null && set.Source == SectorSource.Dwg ? "Capa del DWG" : "Nombre de tipo de la región")
+		};
+		if (set == null || set.Source == SectorSource.Trazo)
+		{
+			_nameOptions.Add((SectorName.Parametro, SectorSet.MarkToken, "Marca de la región"));
+			_nameOptions.Add((SectorName.Comentarios, string.Empty, "Comentarios de la región"));
+			_nameOptions.AddRange(_catalog.RegionParameters.Select(p => (SectorName.Parametro, p, "Parámetro: " + p)));
+			if (set != null && set.NameFrom == SectorName.Parametro && set.NameParameter.Length > 0 && !_nameOptions.Any(o => o.Item2 == set.NameParameter))
+			{
+				_nameOptions.Add((SectorName.Parametro, set.NameParameter, "Parámetro: " + set.NameParameter));
+			}
+		}
+
+		bool filling = _filling;
+		_filling = true;
+		_secNameFrom.Items.Clear();
+		_secNameFrom.Items.AddRange(_nameOptions.Select(o => (object)o.Item3).ToArray());
+		int selected = set == null ? 0 : _nameOptions.FindIndex(o => o.Item1 == set.NameFrom && (o.Item1 != SectorName.Parametro || o.Item2 == set.NameParameter));
+		_secNameFrom.SelectedIndex = Math.Max(0, selected);
+		_filling = filling;
+		if (set != null && selected < 0)
+		{
+			// Opción no disponible (p. ej. Comentarios en un DWG): se vuelve al texto.
+			set.NameFrom = SectorName.Texto;
+		}
+	}
+
 	private void ToggleSourcePanels()
 	{
 		bool sketch = _secSketch.Checked;
@@ -292,6 +340,7 @@ internal sealed partial class FillForm
 	/// <summary>Opciones que dependen del modelo: vistas, tipos de región / estilos de línea y DWG.</summary>
 	private void FillSectorChoices()
 	{
+		RefreshNameOptions();
 		SectorSet set = Current;
 		_filling = true;
 		try
