@@ -11,43 +11,37 @@ using RevitParamFill.Core;
 
 namespace RevitParamFill.UI;
 
-/// <summary>Pestañas 3 (vista previa: parámetro → estado y valor → elementos) y 4 (libre: masivo y personalizado).</summary>
+/// <summary>
+/// Hoja 2 (validar contenido: una fila por elemento y una columna por parámetro con el valor que quedaría) y hoja 4 (libre:
+/// masivo y personalizado).
+/// </summary>
 internal sealed partial class FillForm
 {
-	private const int MaxElementNodes = 500;
+	private const int FixedColumns = 5;
 
 	private static readonly Dictionary<FillStatus, string> StatusText = new Dictionary<FillStatus, string>
 	{
 		[FillStatus.Directo] = "Directo",
-		[FillStatus.Inferido] = "Inferido (confirmar)",
+		[FillStatus.Inferido] = "Inferido",
 		[FillStatus.SinDato] = "Sin dato",
-		[FillStatus.Manual] = "Manual",
+		[FillStatus.Manual] = "Editado a mano",
 		[FillStatus.Igual] = "Ya tiene el valor",
 		[FillStatus.Conservado] = "Se conserva",
 		[FillStatus.Bloqueado] = "Bloqueado"
 	};
 
-	private static readonly Dictionary<FillStatus, Color> StatusColor = new Dictionary<FillStatus, Color>
-	{
-		[FillStatus.Directo] = Color.FromArgb(215, 240, 215),
-		[FillStatus.Inferido] = Color.FromArgb(205, 225, 255),
-		[FillStatus.SinDato] = Color.FromArgb(255, 205, 205),
-		[FillStatus.Manual] = Color.FromArgb(255, 248, 200),
-		[FillStatus.Igual] = Color.FromArgb(235, 235, 235),
-		[FillStatus.Conservado] = Color.FromArgb(235, 235, 235),
-		[FillStatus.Bloqueado] = Color.FromArgb(255, 225, 190)
-	};
+	private static readonly Color Direct = Color.FromArgb(215, 240, 215);
+	private static readonly Color Inferred = Color.FromArgb(220, 232, 255);
+	private static readonly Color InferredAccepted = Color.FromArgb(150, 190, 245);
+	private static readonly Color Missing = Color.FromArgb(255, 210, 210);
+	private static readonly Color Same = Color.FromArgb(240, 240, 240);
+	private static readonly Color Locked = Color.FromArgb(255, 225, 190);
+	private static readonly Color Edited = Color.FromArgb(255, 245, 180);
 
-	private sealed class NodeInfo
-	{
-		public List<FillEntry> Entries;
-
-		public bool Loaded = true;
-	}
-
-	private readonly TreeView _preview = new TreeView();
-	private readonly TextBox _details = new TextBox();
-	private readonly ComboBox _previewFilter = new ComboBox();
+	private readonly DataGridView _table = new DataGridView();
+	private readonly ComboBox _categoryFilter = new ComboBox();
+	private readonly ComboBox _stateFilter = new ComboBox();
+	private readonly TextBox _search = new TextBox();
 	private readonly Label _summary = new Label();
 
 	// Libre.
@@ -64,69 +58,104 @@ internal sealed partial class FillForm
 
 	private FillPlan _plan = new FillPlan();
 	private HashSet<long> _revitSelection = new HashSet<long>();
-	private bool _syncing;
 
-	#region Vista previa
+	/// <summary>Columnas de parámetros (en el orden de las reglas).</summary>
+	private List<string> _targets = new List<string>();
 
-	private TabPage BuildPreviewPage()
+	/// <summary>(elemento, parámetro) → valor propuesto.</summary>
+	private Dictionary<(long, string), FillEntry> _cells = new Dictionary<(long, string), FillEntry>();
+
+	/// <summary>Todas las filas (elementos con algún parámetro) y las mostradas con los filtros.</summary>
+	private List<ElementInfo> _allRows = new List<ElementInfo>();
+	private List<ElementInfo> _shown = new List<ElementInfo>();
+
+	/// <summary>Filas desmarcadas (no se escriben).</summary>
+	private readonly HashSet<long> _excluded = new HashSet<long>();
+
+	private Font _strike;
+
+	#region Validar contenido
+
+	private TabPage BuildValidatePage()
 	{
-		var page = new TabPage("3 · Vista previa");
-		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(8, 8, 8, 0), WrapContents = false };
-		top.Controls.Add(NewButton("Calcular", Do(() => Raise(FillAction.Compute, "Calculando los valores de todos los elementos…")), bold: true));
+		var page = new TabPage("2 · Validar contenido") { BackColor = Color.White };
+		var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 74, Padding = new Padding(10, 8, 10, 0), BackColor = Color.White };
+		top.Controls.Add(NewLabel("Así quedaría cada elemento. Verde: dato directo · Azul: deducido (acéptalo para escribirlo) · Rojo: sin dato · Gris: ya lo tiene · Amarillo: editado a mano. Puedes escribir en una celda para corregirla.", wrap: true));
+		top.SetFlowBreak(top.Controls[0], true);
+		top.Controls.Add(NewLabel("Categoría:"));
+		_categoryFilter.DropDownStyle = ComboBoxStyle.DropDownList;
+		_categoryFilter.Width = 200;
+		_categoryFilter.SelectedIndexChanged += (s, e) => Safe(ApplyFilters);
+		top.Controls.Add(_categoryFilter);
 		top.Controls.Add(NewLabel("   Mostrar:"));
-		_previewFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-		_previewFilter.Width = 260;
-		_previewFilter.Items.AddRange(new object[] { "Lo que se va a escribir (directos e inferidos)", "Solo inferidos", "Sin dato", "Todo" });
-		_previewFilter.SelectedIndex = 0;
-		_previewFilter.SelectedIndexChanged += (s, e) => Safe(Populate);
-		top.Controls.Add(_previewFilter);
-		top.Controls.Add(NewLabel("   Las casillas marcadas se escriben: los directos van marcados; los inferidos, desmarcados hasta que los aceptes."));
+		_stateFilter.DropDownStyle = ComboBoxStyle.DropDownList;
+		_stateFilter.Width = 210;
+		_stateFilter.Items.AddRange(new object[] { "Todos", "Con valores deducidos", "Con valores sin dato", "Con cambios a escribir" });
+		_stateFilter.SelectedIndex = 0;
+		_stateFilter.SelectedIndexChanged += (s, e) => Safe(ApplyFilters);
+		top.Controls.Add(_stateFilter);
+		top.Controls.Add(NewLabel("   Buscar:"));
+		_search.Width = 200;
+		_search.TextChanged += (s, e) => Safe(ApplyFilters);
+		top.Controls.Add(_search);
+		top.Controls.Add(NewButton("Recalcular", Do(() => Raise(FillAction.Compute, "Calculando el contenido de todos los elementos…"))));
 
-		_preview.Dock = DockStyle.Fill;
-		_preview.CheckBoxes = true;
-		_preview.HideSelection = false;
-		_preview.BeforeExpand += (s, e) => Safe(() => LoadElements(e.Node));
-		_preview.BeforeCheck += (s, e) =>
+		_table.Dock = DockStyle.Fill;
+		_table.VirtualMode = true;
+		_table.AllowUserToAddRows = false;
+		_table.AllowUserToDeleteRows = false;
+		_table.AllowUserToResizeRows = false;
+		_table.RowHeadersVisible = false;
+		_table.BackgroundColor = Color.White;
+		_table.BorderStyle = BorderStyle.None;
+		_table.GridColor = Color.FromArgb(225, 225, 225);
+		_table.SelectionMode = DataGridViewSelectionMode.CellSelect;
+		_table.EnableHeadersVisualStyles = false;
+		_table.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(240, 244, 248);
+		_table.ColumnHeadersDefaultCellStyle.Font = new Font(Font, FontStyle.Bold);
+		_table.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+		_table.ColumnHeadersDefaultCellStyle.WrapMode = DataGridViewTriState.True;
+		_table.DefaultCellStyle.SelectionBackColor = Color.FromArgb(120, 160, 210);
+		_table.ShowCellToolTips = true;
+		_table.CellValueNeeded += (s, e) => Safe(() => e.Value = CellValue(e.RowIndex, e.ColumnIndex));
+		_table.CellValuePushed += (s, e) => Safe(() => PushValue(e.RowIndex, e.ColumnIndex, e.Value));
+		_table.CellFormatting += (s, e) => Safe(() => FormatCell(e));
+		_table.CellToolTipTextNeeded += (s, e) => Safe(() => e.ToolTipText = CellTip(e.RowIndex, e.ColumnIndex));
+		_table.CellBeginEdit += (s, e) => e.Cancel = !Editable(e.RowIndex, e.ColumnIndex);
+		_table.CurrentCellDirtyStateChanged += (s, e) =>
 		{
-			// Solo se pueden marcar los valores que se pueden escribir.
-			if (!_syncing && e.Node.Tag is NodeInfo info && !info.Entries.Any(x => x.Writable))
+			if (_table.IsCurrentCellDirty && _table.CurrentCell is DataGridViewCheckBoxCell)
 			{
-				e.Cancel = true;
+				_table.CommitEdit(DataGridViewDataErrorContexts.Commit);
 			}
 		};
-		_preview.AfterCheck += (s, e) => Safe(() => SyncChecks(e.Node));
-		_preview.AfterSelect += (s, e) => Safe(() => ShowDetails(e.Node));
-		_preview.NodeMouseDoubleClick += (s, e) => Safe(() =>
+		_table.CellDoubleClick += (s, e) => Safe(() =>
 		{
-			if (e.Node.Tag is NodeInfo info)
+			if (e.RowIndex >= 0 && e.ColumnIndex > 0 && e.ColumnIndex < FixedColumns)
 			{
-				SelectInRevit(info.Entries.Select(x => x.Element.Id));
+				SelectInRevit(new[] { _shown[e.RowIndex].Id });
 			}
 		});
-
-		_details.Dock = DockStyle.Bottom;
-		_details.Height = 120;
-		_details.Multiline = true;
-		_details.ReadOnly = true;
-		_details.ScrollBars = ScrollBars.Vertical;
-		_details.Font = new Font("Consolas", 9f);
-		_details.BackColor = SystemColors.Window;
+		_table.DataError += (s, e) => e.ThrowException = false;
 
 		_summary.Dock = DockStyle.Bottom;
-		_summary.Height = 22;
-		_summary.Padding = new Padding(4, 4, 0, 0);
+		_summary.Height = 24;
+		_summary.Padding = new Padding(8, 5, 0, 0);
 		_summary.ForeColor = Color.DimGray;
 
-		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 6, 8, 0), WrapContents = false };
-		var accept = NewButton("Aceptar inferidos seleccionados", Do(AcceptSelected), bold: true);
-		accept.ForeColor = Color.RoyalBlue;
-		bottom.Controls.Add(accept);
-		bottom.Controls.Add(NewButton("Escribir marcados", Do(WriteChecked), bold: true));
-		bottom.Controls.Add(NewButton("Seleccionar en Revit", Do(() => SelectInRevit(Selected().Select(x => x.Element.Id)))));
-		bottom.Controls.Add(NewButton("Exportar CSV…", Do(ExportCsv)));
+		var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(10, 8, 10, 0), BackColor = Color.FromArgb(245, 247, 250), WrapContents = false };
+		bottom.Controls.Add(NewButton("Aceptar deducidos de las filas seleccionadas", Do(() => AcceptInferred(SelectedRows()))));
+		bottom.Controls.Add(NewButton("Aceptar todos los deducidos mostrados", Do(() => AcceptInferred(_shown))));
+		Button write = NewButton("Escribir en el modelo", Do(WriteTable), bold: true);
+		write.BackColor = Color.FromArgb(30, 110, 170);
+		write.ForeColor = Color.White;
+		write.FlatStyle = FlatStyle.Flat;
+		write.Margin = new Padding(16, 3, 16, 3);
+		bottom.Controls.Add(write);
+		bottom.Controls.Add(NewButton("Seleccionar en Revit", Do(() => SelectInRevit(SelectedRows().Select(r => r.Id)))));
+		bottom.Controls.Add(NewButton("Exportar tabla (CSV)…", Do(ExportCsv)));
 
-		page.Controls.Add(_preview);
-		page.Controls.Add(_details);
+		page.Controls.Add(_table);
 		page.Controls.Add(_summary);
 		page.Controls.Add(bottom);
 		page.Controls.Add(top);
@@ -137,228 +166,288 @@ internal sealed partial class FillForm
 	{
 		_plan = plan;
 		_documentTitle = title;
-		int inferred = plan.Entries.Count(e => e.Status == FillStatus.Inferido);
+		_excluded.Clear();
+		_targets = plan.Entries.OrderBy(e => e.RuleIndex).Select(e => e.Target).Distinct().ToList();
+		_cells = new Dictionary<(long, string), FillEntry>();
+		foreach (FillEntry entry in plan.Entries)
+		{
+			_cells[(entry.Element.Id, entry.Target)] = entry;
+		}
+
+		// Las de tipo se ven en todos los elementos del tipo (se escriben una vez en el tipo).
+		var typeEntries = plan.Entries.Where(e => e.OnType).ToDictionary(e => (e.Element.TypeId, e.Target), e => e);
+		foreach (ElementInfo element in plan.Elements.Values)
+		{
+			foreach (string target in _targets)
+			{
+				if (!_cells.ContainsKey((element.Id, target)) && typeEntries.TryGetValue((element.TypeId, target), out FillEntry shared))
+				{
+					_cells[(element.Id, target)] = shared;
+				}
+			}
+		}
+
+		_allRows = plan.Elements.Values.OrderBy(e => e.Category, StringComparer.CurrentCultureIgnoreCase)
+			.ThenBy(e => e.FamilyType, StringComparer.CurrentCultureIgnoreCase).ThenBy(e => e.Id).ToList();
+
+		_table.Columns.Clear();
+		_table.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Escribir", Width = 60, Frozen = true });
+		_table.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Id", Width = 80, ReadOnly = true, Frozen = true });
+		_table.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Categoría", Width = 130, ReadOnly = true, Frozen = true });
+		_table.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Familia : Tipo", Width = 260, ReadOnly = true, Frozen = true });
+		_table.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Nivel", Width = 110, ReadOnly = true });
+		foreach (string target in _targets)
+		{
+			_table.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = target, Width = 170, SortMode = DataGridViewColumnSortMode.NotSortable });
+		}
+
+		string category = _categoryFilter.SelectedItem as string;
+		_categoryFilter.Items.Clear();
+		_categoryFilter.Items.Add("(todas)");
+		_categoryFilter.Items.AddRange(_allRows.Select(r => r.Category).Distinct().Cast<object>().ToArray());
+		_categoryFilter.SelectedItem = category != null && _categoryFilter.Items.Contains(category) ? category : "(todas)";
+
 		string notes = plan.Notes.Count > 0 ? "  ·  " + string.Join("  ·  ", plan.Notes.Take(3)) : string.Empty;
-		SetBusy(false, $"Calculado en {plan.Elapsed.TotalSeconds:0.0} s: {plan.Elements.Count} elementos, {plan.Entries.Count(e => e.Status == FillStatus.Directo)} valores directos, " +
-			$"{inferred} inferidos por confirmar, {plan.Entries.Count(e => e.Status == FillStatus.SinDato)} sin dato.{notes}");
-		Populate();
+		SetBusy(false, $"Calculado en {plan.Elapsed.TotalSeconds:0.0} s: {plan.Elements.Count} elementos.{notes}");
+		ApplyFilters();
 		FillFreeChoices();
 	}
 
-	private IEnumerable<FillEntry> VisibleEntries()
+	private FillEntry Entry(ElementInfo row, int column) =>
+		column >= FixedColumns && column - FixedColumns < _targets.Count && _cells.TryGetValue((row.Id, _targets[column - FixedColumns]), out FillEntry entry)
+			? entry
+			: null;
+
+	/// <summary>Se escribe: fila marcada, valor escribible y, si es deducido, aceptado.</summary>
+	private bool WillWrite(FillEntry entry) =>
+		entry != null && entry.NewValue != null && !_excluded.Contains(entry.Element.Id) &&
+		(entry.Status == FillStatus.Directo || entry.Status == FillStatus.Manual || (entry.Status == FillStatus.Inferido && entry.Accepted));
+
+	private void ApplyFilters()
 	{
-		switch (_previewFilter.SelectedIndex)
+		string category = _categoryFilter.SelectedItem as string;
+		string search = Core.Text.Simplify(_search.Text);
+		int state = _stateFilter.SelectedIndex;
+		_shown = _allRows.Where(row =>
+		{
+			if (category != null && category != "(todas)" && row.Category != category)
+			{
+				return false;
+			}
+
+			if (search.Length > 0 && !Core.Text.Simplify($"{row.Id} {row.Category} {row.FamilyType} {row.Level}").Contains(search))
+			{
+				return false;
+			}
+
+			IEnumerable<FillEntry> entries = _targets.Select(t => _cells.TryGetValue((row.Id, t), out FillEntry e) ? e : null).Where(e => e != null);
+			switch (state)
+			{
+				case 1:
+					return entries.Any(e => e.Status == FillStatus.Inferido);
+				case 2:
+					return entries.Any(e => e.Status == FillStatus.SinDato);
+				case 3:
+					return entries.Any(WillWrite);
+				default:
+					return true;
+			}
+		}).ToList();
+
+		_table.RowCount = 0;
+		_table.RowCount = _shown.Count;
+		_table.Invalidate();
+		UpdateSummary();
+	}
+
+	private object CellValue(int rowIndex, int column)
+	{
+		if (rowIndex < 0 || rowIndex >= _shown.Count)
+		{
+			return null;
+		}
+
+		ElementInfo row = _shown[rowIndex];
+		switch (column)
 		{
 			case 0:
-				return _plan.Entries.Where(e => e.Writable);
+				return !_excluded.Contains(row.Id);
 			case 1:
-				return _plan.Entries.Where(e => e.Status == FillStatus.Inferido);
+				return row.Id.ToString(CultureInfo.InvariantCulture);
 			case 2:
-				return _plan.Entries.Where(e => e.Status == FillStatus.SinDato);
-			default:
-				return _plan.Entries;
+				return row.Category;
+			case 3:
+				return row.FamilyType;
+			case 4:
+				return row.Level;
+		}
+
+		FillEntry entry = Entry(row, column);
+		if (entry == null)
+		{
+			return "·";
+		}
+
+		return entry.Status == FillStatus.SinDato ? "(sin dato)" : entry.Status == FillStatus.Bloqueado ? entry.Current : entry.NewValue ?? entry.Current;
+	}
+
+	private bool Editable(int rowIndex, int column)
+	{
+		if (rowIndex < 0 || rowIndex >= _shown.Count)
+		{
+			return false;
+		}
+
+		if (column == 0)
+		{
+			return true;
+		}
+
+		FillEntry entry = Entry(_shown[rowIndex], column);
+		return entry != null && entry.Status != FillStatus.Bloqueado;
+	}
+
+	/// <summary>Marcar/desmarcar la fila, o escribir un valor a mano en una celda (queda "editado a mano" y aceptado).</summary>
+	private void PushValue(int rowIndex, int column, object value)
+	{
+		if (rowIndex < 0 || rowIndex >= _shown.Count)
+		{
+			return;
+		}
+
+		ElementInfo row = _shown[rowIndex];
+		if (column == 0)
+		{
+			if (value is bool check && check)
+			{
+				_excluded.Remove(row.Id);
+			}
+			else
+			{
+				_excluded.Add(row.Id);
+			}
+		}
+		else
+		{
+			FillEntry entry = Entry(row, column);
+			string text = (value as string ?? string.Empty).Trim();
+			if (entry == null || entry.Status == FillStatus.Bloqueado || text == (entry.NewValue ?? string.Empty) || text == "(sin dato)")
+			{
+				return;
+			}
+
+			entry.NewValue = text.Length > 0 ? text : null;
+			entry.Status = text.Length == 0 ? FillStatus.SinDato : text == entry.Current ? FillStatus.Igual : FillStatus.Manual;
+			entry.Accepted = entry.Status == FillStatus.Manual;
+			entry.Reason = "Editado a mano en la tabla.";
+		}
+
+		_table.InvalidateRow(rowIndex);
+		UpdateSummary();
+	}
+
+	private void FormatCell(DataGridViewCellFormattingEventArgs e)
+	{
+		if (e.RowIndex < 0 || e.RowIndex >= _shown.Count || e.ColumnIndex < FixedColumns)
+		{
+			return;
+		}
+
+		FillEntry entry = Entry(_shown[e.RowIndex], e.ColumnIndex);
+		if (entry == null)
+		{
+			e.CellStyle.ForeColor = Color.LightGray;
+			e.CellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+			return;
+		}
+
+		e.CellStyle.BackColor = entry.Status switch
+		{
+			FillStatus.Directo => Direct,
+			FillStatus.Inferido => entry.Accepted ? InferredAccepted : Inferred,
+			FillStatus.SinDato => Missing,
+			FillStatus.Manual => Edited,
+			FillStatus.Bloqueado => Locked,
+			_ => Same
+		};
+		if (entry.Status == FillStatus.SinDato || entry.Status == FillStatus.Igual || entry.Status == FillStatus.Conservado)
+		{
+			e.CellStyle.ForeColor = Color.DimGray;
+		}
+
+		if (_excluded.Contains(entry.Element.Id))
+		{
+			e.CellStyle.ForeColor = Color.Gray;
+			e.CellStyle.Font = _strike ??= new Font(_table.Font, FontStyle.Strikeout);
 		}
 	}
 
-	/// <summary>Motivo sin los números (distancias, cantidades), para agrupar deducciones del mismo tipo.</summary>
-	private static string ReasonKind(FillEntry entry)
+	private string CellTip(int rowIndex, int column)
 	{
-		if (entry.Status != FillStatus.Inferido || string.IsNullOrEmpty(entry.Reason))
+		if (rowIndex < 0 || rowIndex >= _shown.Count)
 		{
 			return string.Empty;
 		}
 
-		int cut = entry.Reason.IndexOfAny(new[] { ':', '(', ';' });
-		return " · " + (cut > 0 ? entry.Reason.Substring(0, cut) : entry.Reason).Trim();
+		FillEntry entry = Entry(_shown[rowIndex], column);
+		if (entry == null)
+		{
+			return column >= FixedColumns ? "El elemento no tiene este parámetro." : "Doble clic: seleccionar en Revit.";
+		}
+
+		return $"{StatusText[entry.Status]}{(entry.Status == FillStatus.Inferido ? (entry.Accepted ? " (aceptado)" : " (sin aceptar)") : string.Empty)}\n" +
+			$"Actual: {(entry.Current.Length > 0 ? entry.Current : "(vacío)")}\nNuevo: {entry.NewValue ?? "(sin dato)"}\n{entry.Reason}" +
+			(entry.OnType ? "\nParámetro de tipo: se escribe en el tipo." : string.Empty);
 	}
 
-	private void Populate()
+	private List<ElementInfo> SelectedRows() =>
+		_table.SelectedCells.Cast<DataGridViewCell>().Select(c => c.RowIndex).Distinct()
+			.Where(i => i >= 0 && i < _shown.Count).Select(i => _shown[i]).ToList();
+
+	private void AcceptInferred(IEnumerable<ElementInfo> rows)
 	{
-		var expanded = new HashSet<string>(All(_preview.Nodes).Where(n => n.IsExpanded).Select(n => n.Name));
-		_preview.BeginUpdate();
-		_syncing = true;
-		_preview.Nodes.Clear();
-		foreach (var parameter in VisibleEntries().GroupBy(e => e.Target).OrderBy(g => g.Min(e => e.RuleIndex)))
+		int accepted = 0;
+		foreach (ElementInfo row in rows)
 		{
-			var entries = parameter.ToList();
-			var parameterNode = new TreeNode($"{parameter.Key}   [{entries.Count}]")
+			foreach (string target in _targets)
 			{
-				Name = "p:" + parameter.Key,
-				Tag = new NodeInfo { Entries = entries },
-				NodeFont = new Font(_preview.Font, FontStyle.Bold)
-			};
-			foreach (var group in entries.GroupBy(e => (e.Status, Value: e.NewValue ?? string.Empty, Kind: ReasonKind(e)))
-						 .OrderBy(g => g.Key.Status == FillStatus.Directo ? 0 : g.Key.Status == FillStatus.Inferido ? 1 : 2)
-						 .ThenByDescending(g => g.Count()))
-			{
-				var groupEntries = group.ToList();
-				string value = group.Key.Value.Length > 0 ? $"\"{group.Key.Value}\"" : "(vacío)";
-				var groupNode = new TreeNode($"{StatusText[group.Key.Status]} · {value}{group.Key.Kind}   [{groupEntries.Count}]")
+				if (_cells.TryGetValue((row.Id, target), out FillEntry entry) && entry.Status == FillStatus.Inferido && !entry.Accepted)
 				{
-					Name = $"g:{parameter.Key}|{group.Key.Status}|{group.Key.Value}|{group.Key.Kind}",
-					Tag = new NodeInfo { Entries = groupEntries, Loaded = false },
-					BackColor = StatusColor[group.Key.Status],
-					Checked = groupEntries.All(e => e.Accepted && e.Writable)
-				};
-				groupNode.Nodes.Add(new TreeNode("…"));
-				parameterNode.Nodes.Add(groupNode);
+					entry.Accepted = true;
+					accepted++;
+				}
 			}
-
-			parameterNode.Checked = parameterNode.Nodes.Count > 0 && parameterNode.Nodes.Cast<TreeNode>().All(n => n.Checked);
-			_preview.Nodes.Add(parameterNode);
 		}
 
-		foreach (TreeNode node in All(_preview.Nodes).ToList().Where(n => expanded.Contains(n.Name)))
-		{
-			node.Expand();
-		}
-
-		_syncing = false;
-		_preview.EndUpdate();
+		_table.Invalidate();
 		UpdateSummary();
-	}
-
-	private static IEnumerable<TreeNode> All(TreeNodeCollection nodes)
-	{
-		foreach (TreeNode node in nodes)
-		{
-			yield return node;
-			foreach (TreeNode child in All(node.Nodes))
-			{
-				yield return child;
-			}
-		}
-	}
-
-	private void LoadElements(TreeNode node)
-	{
-		if (!(node.Tag is NodeInfo info) || info.Loaded)
-		{
-			return;
-		}
-
-		info.Loaded = true;
-		_preview.BeginUpdate();
-		_syncing = true;
-		node.Nodes.Clear();
-		foreach (FillEntry entry in info.Entries.Take(MaxElementNodes))
-		{
-			string current = entry.Current.Length > 0 ? $"\"{entry.Current}\"" : "(vacío)";
-			node.Nodes.Add(new TreeNode($"{entry.Element.Id} · {entry.Element.Category} · {entry.Element.FamilyType} · {entry.Element.Level} · {current} → \"{entry.NewValue}\"" +
-				(entry.OnType ? "  (de tipo)" : string.Empty))
-			{
-				Tag = new NodeInfo { Entries = new List<FillEntry> { entry } },
-				Checked = entry.Accepted && entry.Writable
-			});
-		}
-
-		if (info.Entries.Count > MaxElementNodes)
-		{
-			node.Nodes.Add(new TreeNode($"… y {info.Entries.Count - MaxElementNodes} más (marca el grupo para todos)") { ForeColor = Color.DimGray });
-		}
-
-		_syncing = false;
-		_preview.EndUpdate();
-	}
-
-	/// <summary>Marcar un nodo acepta (o quita) todos sus valores; los hijos y padres se actualizan.</summary>
-	private void SyncChecks(TreeNode node)
-	{
-		if (_syncing)
-		{
-			return;
-		}
-
-		_syncing = true;
-		if (node.Tag is NodeInfo info)
-		{
-			foreach (FillEntry entry in info.Entries.Where(e => e.Writable))
-			{
-				entry.Accepted = node.Checked;
-			}
-		}
-
-		foreach (TreeNode child in All(node.Nodes))
-		{
-			child.Checked = node.Checked && child.Tag is NodeInfo childInfo && childInfo.Entries.Any(e => e.Writable);
-		}
-
-		for (TreeNode parent = node.Parent; parent != null; parent = parent.Parent)
-		{
-			parent.Checked = parent.Tag is NodeInfo parentInfo && parentInfo.Entries.Where(e => e.Writable).All(e => e.Accepted);
-		}
-
-		_syncing = false;
-		UpdateSummary();
-	}
-
-	private List<FillEntry> Selected() => _preview.SelectedNode?.Tag is NodeInfo info ? info.Entries : new List<FillEntry>();
-
-	private void AcceptSelected()
-	{
-		TreeNode node = _preview.SelectedNode;
-		if (node == null || !(node.Tag is NodeInfo info) || !info.Entries.Any(e => e.Status == FillStatus.Inferido))
-		{
-			MessageBox.Show(this, "Selecciona un grupo (o elemento) \"Inferido\" para aceptarlo.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-			return;
-		}
-
-		node.Checked = true;
-		_status.Text = $"{info.Entries.Count(e => e.Status == FillStatus.Inferido)} valor(es) inferidos aceptados. Pulsa \"Escribir marcados\".";
+		_status.Text = accepted == 0 ? "No hay valores deducidos por aceptar en esas filas." : $"{accepted} valor(es) deducidos aceptados.";
 	}
 
 	private void UpdateSummary()
 	{
-		int toWrite = _plan.Entries.Count(e => e.Accepted && e.Writable);
-		int inferred = _plan.Entries.Count(e => e.Status == FillStatus.Inferido);
-		int accepted = _plan.Entries.Count(e => e.Status == FillStatus.Inferido && e.Accepted);
-		_summary.Text = $"Se escribirán {toWrite} valor(es)  ·  inferidos aceptados: {accepted} de {inferred}  ·  sin dato: {_plan.Entries.Count(e => e.Status == FillStatus.SinDato)}" +
-			$"  ·  bloqueados: {_plan.Entries.Count(e => e.Status == FillStatus.Bloqueado)}";
+		List<FillEntry> entries = _cells.Values.Distinct().ToList();
+		int toWrite = entries.Count(WillWrite);
+		int pending = entries.Count(e => e.Status == FillStatus.Inferido && !e.Accepted);
+		int missing = entries.Count(e => e.Status == FillStatus.SinDato);
+		_summary.Text = $"Mostrando {_shown.Count} de {_allRows.Count} elementos  ·  se escribirán {toWrite} valor(es)  ·  deducidos por aceptar: {pending}  ·  sin dato: {missing}";
 	}
 
-	private void ShowDetails(TreeNode node)
+	private void WriteTable()
 	{
-		if (!(node?.Tag is NodeInfo info) || info.Entries.Count == 0)
-		{
-			_details.Text = string.Empty;
-			return;
-		}
-
-		var text = new StringBuilder();
-		if (info.Entries.Count == 1)
-		{
-			FillEntry entry = info.Entries[0];
-			text.AppendLine($"Elemento {entry.Element.Id} · {entry.Element.Category} · {entry.Element.FamilyType} · {entry.Element.Level}");
-			text.AppendLine($"{entry.Target}{(entry.OnType ? " (parámetro de tipo)" : string.Empty)}: \"{entry.Current}\" → \"{entry.NewValue}\"   [{StatusText[entry.Status]}]");
-			text.AppendLine("Motivo: " + entry.Reason);
-		}
-		else
-		{
-			text.AppendLine(node.Text);
-			foreach (var reason in info.Entries.GroupBy(e => e.Reason).OrderByDescending(g => g.Count()).Take(5))
-			{
-				text.AppendLine($"  {reason.Count(),5} × {reason.Key}");
-			}
-
-			text.AppendLine("Doble clic: seleccionar en Revit.");
-		}
-
-		_details.Text = text.ToString();
-	}
-
-	private void WriteChecked()
-	{
-		List<FillEntry> entries = _plan.Entries.Where(e => e.Accepted && e.Writable && e.NewValue != null).ToList();
+		List<FillEntry> entries = _cells.Values.Distinct().Where(WillWrite).ToList();
 		if (entries.Count == 0)
 		{
-			MessageBox.Show(this, "No hay valores marcados para escribir (pulsa Calcular y marca los grupos).", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			MessageBox.Show(this, "No hay valores para escribir (pulsa \"Crear contenido de parámetros\" en la hoja 1, o acepta los deducidos).", Text,
+				MessageBoxButtons.OK, MessageBoxIcon.Information);
 			return;
 		}
 
-		int inferred = entries.Count(e => e.Status == FillStatus.Inferido);
+		int pending = _cells.Values.Distinct().Count(e => e.Status == FillStatus.Inferido && !e.Accepted);
 		string summary = string.Join("\n", entries.GroupBy(e => e.Target).Select(g => $"  {g.Key}: {g.Count()}"));
-		if (MessageBox.Show(this, $"Escribir {entries.Count} valor(es){(inferred > 0 ? $", de ellos {inferred} inferidos aceptados" : string.Empty)}:\n\n{summary}\n\nSe deshace con Ctrl+Z en Revit.",
-				Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
+		if (MessageBox.Show(this, $"Escribir {entries.Count} valor(es) en el modelo:\n\n{summary}" +
+				(pending > 0 ? $"\n\n{pending} valor(es) deducidos sin aceptar no se escriben." : string.Empty) +
+				"\n\nSe deshace con Ctrl+Z en Revit.", Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
 		{
 			_handler.Values = entries.Select(e => (e.Element.Id, e.Target, e.NewValue)).ToList();
 			Raise(FillAction.Write, "Escribiendo…");
@@ -376,21 +465,35 @@ internal sealed partial class FillForm
 
 	private void ExportCsv()
 	{
-		using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = $"Rellenar - {_documentTitle}.csv" };
+		using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = $"Contenido de parámetros - {_documentTitle}.csv" };
 		if (dialog.ShowDialog(this) != DialogResult.OK)
 		{
 			return;
 		}
 
 		using var writer = new StreamWriter(dialog.FileName, false, new UTF8Encoding(true));
-		writer.WriteLine("Id;Categoría;Familia : Tipo;Nivel;Parámetro;De tipo;Actual;Nuevo;Estado;Se escribe;Motivo");
-		foreach (FillEntry entry in _plan.Entries)
+		var header = new List<string> { "Escribir", "Id", "Categoría", "Familia : Tipo", "Nivel" };
+		foreach (string target in _targets)
 		{
-			writer.WriteLine(string.Join(";", new[]
+			header.Add(target);
+			header.Add(target + " (estado)");
+		}
+
+		writer.WriteLine(string.Join(";", header.Select(Escape)));
+		foreach (ElementInfo row in _shown)
+		{
+			var cells = new List<string>
 			{
-				entry.Element.Id.ToString(CultureInfo.InvariantCulture), entry.Element.Category, entry.Element.FamilyType, entry.Element.Level, entry.Target,
-				entry.OnType ? "Sí" : "No", entry.Current, entry.NewValue ?? string.Empty, StatusText[entry.Status], entry.Accepted && entry.Writable ? "Sí" : "No", entry.Reason
-			}.Select(Escape)));
+				_excluded.Contains(row.Id) ? "No" : "Sí", row.Id.ToString(CultureInfo.InvariantCulture), row.Category, row.FamilyType, row.Level
+			};
+			foreach (string target in _targets)
+			{
+				FillEntry entry = _cells.TryGetValue((row.Id, target), out FillEntry e) ? e : null;
+				cells.Add(entry == null ? string.Empty : entry.NewValue ?? entry.Current);
+				cells.Add(entry == null ? "No tiene el parámetro" : StatusText[entry.Status] + (entry.Status == FillStatus.Inferido && entry.Accepted ? " (aceptado)" : string.Empty));
+			}
+
+			writer.WriteLine(string.Join(";", cells.Select(Escape)));
 		}
 
 		_status.Text = "Exportado: " + dialog.FileName;
@@ -424,7 +527,7 @@ internal sealed partial class FillForm
 		_scopeSelection.Text = "la selección actual de Revit";
 		_scopeSelection.AutoSize = true;
 		_scopeSelection.Checked = true;
-		_scopeChecked.Text = "lo marcado en la vista previa";
+		_scopeChecked.Text = "las filas marcadas en la tabla (hoja 2)";
 		_scopeChecked.AutoSize = true;
 		_scopeCategory.Text = "toda la categoría:";
 		_scopeCategory.AutoSize = true;
@@ -515,7 +618,7 @@ internal sealed partial class FillForm
 		}
 		else if (_scopeChecked.Checked)
 		{
-			ids = _plan.Entries.Where(e => e.Accepted && e.Writable).Select(e => e.Element.Id).Distinct().ToList();
+			ids = _shown.Where(r => !_excluded.Contains(r.Id)).Select(r => r.Id).ToList();
 		}
 		else
 		{
@@ -525,7 +628,7 @@ internal sealed partial class FillForm
 
 		if (ids.Count == 0)
 		{
-			MessageBox.Show(this, _scopeSelection.Checked ? "Selecciona elementos en Revit y pulsa \"Leer selección\"." : "No hay elementos en el alcance (pulsa Calcular en la vista previa).",
+			MessageBox.Show(this, _scopeSelection.Checked ? "Selecciona elementos en Revit y pulsa \"Leer selección\"." : "No hay elementos en el alcance (pulsa \"Crear contenido de parámetros\" en la hoja 1).",
 				Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
 			return;
 		}
@@ -545,7 +648,7 @@ internal sealed partial class FillForm
 		List<FillEntry> entries = _plan.Entries.Where(e => e.Target == target).ToList();
 		if (entries.Count == 0)
 		{
-			MessageBox.Show(this, "Pulsa Calcular en la vista previa: el parámetro debe tener una regla (por ejemplo \"Libre\").", Text,
+			MessageBox.Show(this, "Pulsa \"Crear contenido de parámetros\" en la hoja 1: el parámetro debe estar en la lista (por ejemplo como \"Libre\").", Text,
 				MessageBoxButtons.OK, MessageBoxIcon.Information);
 			return;
 		}

@@ -37,7 +37,7 @@ internal sealed partial class FillForm
 
 	private TabPage BuildSectorsPage()
 	{
-		var page = new TabPage("2 · Sectorización");
+		var page = new TabPage("3 · Sectorización");
 		var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
 		bool splitSet = false;
 		split.SizeChanged += (s, e) =>

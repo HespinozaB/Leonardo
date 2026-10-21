@@ -15,6 +15,7 @@ internal enum FillAction
 	ReadSectors,
 	ListLayers,
 	Compute,
+	CreateAndCompute,
 	Write,
 	CreateParameters,
 	Select,
@@ -100,6 +101,26 @@ internal sealed class FillHandler : IExternalEventHandler
 				case FillAction.Compute:
 					OnPlan?.Invoke(Filler.Compute(doc, Rules), doc.Title);
 					break;
+				case FillAction.CreateAndCompute:
+				{
+					// Crea los parámetros que faltan (si los hay) y calcula el contenido.
+					string created = null;
+					if (Names.Count > 0)
+					{
+						created = Run(doc, "EMASY: crear parámetros", () => SharedParams.Ensure(doc, Names));
+						Names = new List<string>();
+						OnCatalog?.Invoke(Catalog(doc), doc.Title);
+					}
+
+					FillPlan plan = Filler.Compute(doc, Rules);
+					if (created != null)
+					{
+						plan.Notes.Insert(0, created);
+					}
+
+					OnPlan?.Invoke(plan, doc.Title);
+					break;
+				}
 				case FillAction.Write:
 					if (!string.IsNullOrEmpty(DocumentTitle) && DocumentTitle != doc.Title)
 					{
