@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>EMASY Rellenar</Name>
+    <Assembly>EMASY-Rellenar-2024\RevitParamFill.dll</Assembly>
+    <AddInId>F953D08F-B4CC-4E48-A270-789D7F25CC5B</AddInId>
+    <FullClassName>RevitParamFill.App</FullClassName>
+    <VendorId>EMASY</VendorId>
+    <VendorDescription>EMASY - Rellenar parametros</VendorDescription>
+  </AddIn>
+</RevitAddIns>
