@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>EMASY-Parametros-2024-Setup</AssemblyName>
+    <RootNamespace>EmasyInstaller</RootNamespace>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <LangVersion>11.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <Version>1.0.0</Version>
+    <Product>EMASY Parámetros</Product>
+    <Company>EMASY</Company>
+    <Description>Instalador de EMASY Parámetros para Revit 2024</Description>
+    <ApplicationIcon>..\..\RevitDwgExploder\installer\emasy.ico</ApplicationIcon>
+    <ApplicationManifest>..\..\RevitDwgExploder\installer\app.manifest</ApplicationManifest>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- El paquete del addin (generado por build-zip.sh) va dentro del .exe. -->
+    <EmbeddedResource Include="..\dist\EMASY-Parametros-2024.zip" LogicalName="payload.zip" />
+    <EmbeddedResource Include="..\..\RevitDwgExploder\resources\icon256.png" LogicalName="logo.png" />
+  </ItemGroup>
+
+</Project>
