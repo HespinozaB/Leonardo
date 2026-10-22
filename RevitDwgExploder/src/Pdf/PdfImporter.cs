@@ -146,7 +146,9 @@ internal static class PdfImporter
 			(s.Failed.Count > 0 ? $"\nNo se pudieron procesar ({s.Failed.Count}): " + string.Join(", ", s.Failed.Take(8)) + (s.Failed.Count > 8 ? "…" : string.Empty) + "\n" : string.Empty) +
 			(s.SuppressedDialogs > 0 ? $"{s.SuppressedDialogs} aviso(s) de Revit se cancelaron automáticamente.\n" : string.Empty) +
 			(s.DeletedOriginals > 0 ? $"{s.DeletedOriginals} PDF original(es) eliminado(s) después de explotarlos.\n" : string.Empty) +
-			"\nSi el PDF es un escaneo (imagen), no tiene líneas ni textos que convertir.";
+			(s.FromEmbeddedImage > 0 ? $"{s.FromEmbeddedImage} PDF sin archivo: se vectorizó la imagen que Revit guarda de ellos (menos exacto que el PDF).\n" : string.Empty) +
+			(s.Scanned > 0 ? $"{s.Scanned} PDF escaneado(s) (sin vectores): se vectorizó su imagen.\n" : string.Empty) +
+			(s.FromEmbeddedImage + s.Scanned > 0 ? "\nLo vectorizado desde una imagen usa Line Styles con prefijo \"IMG\"." : string.Empty);
 		TaskDialog.Show(title, text);
 	}
 }

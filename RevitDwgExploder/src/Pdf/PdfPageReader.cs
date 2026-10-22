@@ -138,6 +138,20 @@ internal static class PdfPageReader
 		return document.NumberOfPages;
 	}
 
+	/// <summary>Páginas del archivo y tamaño visible (puntos, con la rotación aplicada) de la página indicada.</summary>
+	public static (int Pages, double Width, double Height) PageInfo(string path, int pageNumber)
+	{
+		using PdfDocument document = PdfDocument.Open(path);
+		if (pageNumber < 1 || pageNumber > document.NumberOfPages)
+		{
+			return (document.NumberOfPages, 0, 0);
+		}
+
+		Page page = document.GetPage(pageNumber);
+		PdfRectangle visible = page.CropBox.GetVisibleBounds(page.Rotation);
+		return (document.NumberOfPages, Math.Abs(visible.Width), Math.Abs(visible.Height));
+	}
+
 	public static PdfDrawing Read(string path, int pageNumber)
 	{
 		using PdfDocument document = PdfDocument.Open(path);

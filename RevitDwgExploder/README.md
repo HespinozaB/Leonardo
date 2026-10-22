@@ -36,6 +36,24 @@ python3 tools/make_icons.py   # regenera los iconos (requiere Pillow)
 
 Requiere .NET SDK 6+ (las referencias de la API de Revit 2024 vienen de NuGet, no hace falta tener Revit instalado).
 
+## Cambios de la versión 1.18
+
+### Explotar PDF: PDF vinculados cuyo archivo no está
+
+- Antes, si el archivo del PDF no estaba en la ruta que guarda Revit (vinculado en otro equipo, movido o descargado
+  otra vez como "archivo (5).pdf"), se abría un cuadro "No se encuentra el PDF…" por cada PDF y sin alternativa.
+- Ahora el archivo se **busca solo** por su nombre (también las copias "(5)"): junto al modelo, en Descargas,
+  Escritorio, Documentos y en las carpetas ya elegidas en la sesión. Solo se usa si tiene la página y las mismas
+  proporciones que el PDF insertado (no se toma otra versión del plano).
+- Si no aparece, **una sola pregunta** para todos los que faltan:
+  - *Buscar los archivos…*: eliges uno y los demás se buscan en esa carpeta; si el elegido no coincide con el
+    insertado, se avisa antes de usarlo.
+  - *Explotar la imagen guardada en Revit*: sin el archivo, se vectoriza la imagen que Revit guarda del PDF (mismo
+    motor que Imágenes Tools).
+  - *Omitir estos PDF*.
+- PDF escaneados (sin vectores) o archivos que no se pueden leer: se explota la imagen automáticamente.
+- Igual en "Explotar Varios PDF's".
+
 ## Cambios de la versión 1.17
 
 ### Explotar imágenes: máxima interpretación y calidad de imagen

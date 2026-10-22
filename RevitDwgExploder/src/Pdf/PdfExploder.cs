@@ -26,6 +26,12 @@ internal sealed class PdfExplodeStats
 	public List<string> Failed = new List<string>();
 	public int SuppressedDialogs;
 	public int DeletedOriginals;
+
+	/// <summary>PDF sin archivo explotados desde la imagen que Revit guarda de ellos.</summary>
+	public int FromEmbeddedImage;
+
+	/// <summary>PDF escaneados (sin vectores) explotados vectorizando su imagen.</summary>
+	public int Scanned;
 }
 
 /// <summary>
@@ -345,6 +351,18 @@ internal static class PdfExploder
 		PdfDrawing drawing = PdfPageReader.Read(pdfPath, PageOf(type));
 		if (drawing.Width <= 0.0 || instance.Width <= 0.0)
 		{
+			return false;
+		}
+
+		// PDF escaneado (solo una imagen, sin trazos ni textos): se vectoriza la imagen que Revit guarda de la página.
+		if (drawing.Strokes.Count == 0 && drawing.Fills.Count == 0 && drawing.Texts.Count == 0)
+		{
+			if (Raster.RasterExploder.ExplodeImage(doc, instance, null, shortCurveTolerance, stats))
+			{
+				stats.Scanned++;
+				return true;
+			}
+
 			return false;
 		}
 

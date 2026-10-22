@@ -34,30 +34,13 @@ public class ExplodePdfCommand : IExternalCommand
 		var stats = new PdfExplodeStats();
 		if (targets.Count > 0)
 		{
-			Dictionary<ElementId, string> paths = ResolvePaths(doc, targets);
+			PdfSources sources = ResolvePaths(doc, targets);
 			using (var group = new TransactionGroup(doc, "EMASY: explotar PDF"))
 			{
 				group.Start();
 				foreach (ImageInstance instance in targets)
 				{
-					string name = doc.GetElement(instance.GetTypeId())?.Name ?? instance.Id.ToString();
-					if (!paths.TryGetValue(instance.GetTypeId(), out string path))
-					{
-						stats.Failed.Add(name + " (archivo no encontrado)");
-						continue;
-					}
-
-					try
-					{
-						if (!PdfExploder.ExplodeImage(doc, instance, path, shortCurve, stats))
-						{
-							stats.Failed.Add(name);
-						}
-					}
-					catch (Exception ex)
-					{
-						stats.Failed.Add(name + " (" + ex.Message + ")");
-					}
+					ExplodeInstance(doc, instance, sources, shortCurve, stats);
 				}
 
 				group.Assimilate();
@@ -186,39 +169,196 @@ public class ExplodePdfCommand : IExternalCommand
 			.ToList();
 	}
 
-	/// <summary>Ruta del PDF de cada tipo; si el archivo ya no está donde Revit lo recuerda, se pide al usuario.</summary>
-	internal static Dictionary<ElementId, string> ResolvePaths(Document doc, IEnumerable<ImageInstance> instances)
+	/// <summary>
+	/// Explota un PDF insertado: con su archivo (vectores exactos) o, si no hay archivo, vectorizando la imagen que
+	/// Revit guarda del PDF. Devuelve true si se creó algo.
+	/// </summary>
+	internal static bool ExplodeInstance(Document doc, ImageInstance instance, PdfSources sources, double shortCurve, PdfExplodeStats stats)
 	{
-		var result = new Dictionary<ElementId, string>();
-		foreach (ElementId typeId in instances.Select(i => i.GetTypeId()).Distinct())
+		ElementId typeId = instance.GetTypeId();
+		string name = doc.GetElement(typeId)?.Name ?? instance.Id.ToString();
+		try
 		{
-			var type = doc.GetElement(typeId) as ImageType;
-			string path = type?.Path;
-			if (!string.IsNullOrEmpty(path) && !Path.IsPathRooted(path) && !string.IsNullOrEmpty(doc.PathName))
+			if (sources.Paths.TryGetValue(typeId, out string path))
 			{
-				path = Path.Combine(Path.GetDirectoryName(doc.PathName) ?? string.Empty, path);
-			}
-
-			if (string.IsNullOrEmpty(path) || !File.Exists(path))
-			{
-				using var dialog = new OpenFileDialog
+				try
 				{
-					Title = $"No se encuentra el PDF de \"{type?.Name}\": selecciona el archivo",
-					Filter = "Archivos PDF (*.pdf)|*.pdf",
-					CheckFileExists = true,
-					FileName = Path.GetFileName(path ?? string.Empty)
-				};
-				path = dialog.ShowDialog() == DialogResult.OK ? dialog.FileName : null;
+					if (PdfExploder.ExplodeImage(doc, instance, path, shortCurve, stats))
+					{
+						return true;
+					}
+				}
+				catch (Exception)
+				{
+					// El archivo no se pudo leer (dañado, protegido…): se intenta con la imagen que guarda Revit.
+				}
+
+				if (Raster.RasterExploder.ExplodeImage(doc, instance, null, shortCurve, stats))
+				{
+					stats.FromEmbeddedImage++;
+					return true;
+				}
+
+				stats.Failed.Add(name);
+				return false;
 			}
 
-			if (path != null)
+			if (sources.UseEmbeddedImage.Contains(typeId))
 			{
-				result[typeId] = path;
+				if (Raster.RasterExploder.ExplodeImage(doc, instance, null, shortCurve, stats))
+				{
+					stats.FromEmbeddedImage++;
+					return true;
+				}
+
+				stats.Failed.Add(name + " (Revit no tiene la imagen del PDF)");
+				return false;
+			}
+
+			stats.Failed.Add(name + " (archivo no encontrado, omitido)");
+			return false;
+		}
+		catch (Exception ex)
+		{
+			stats.Failed.Add(name + " (" + ex.Message + ")");
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// Archivo del PDF de cada tipo. Si no está donde Revit lo recuerda se busca solo (por nombre, comprobando que sea
+	/// el mismo plano); los que no aparecen se resuelven con una sola pregunta: buscarlos a mano, explotar la imagen
+	/// que Revit guarda del PDF, u omitirlos.
+	/// </summary>
+	internal static PdfSources ResolvePaths(Document doc, IEnumerable<ImageInstance> instances)
+	{
+		var sources = new PdfSources();
+		var locator = new PdfFileLocator(doc);
+		Dictionary<ElementId, ImageInstance> samples = instances
+			.GroupBy(i => i.GetTypeId())
+			.ToDictionary(g => g.Key, g => g.First());
+		var missing = new List<ElementId>();
+		foreach (var pair in samples)
+		{
+			if (doc.GetElement(pair.Key) is ImageType type && locator.Find(type, pair.Value) is string found)
+			{
+				sources.Paths[pair.Key] = found;
+			}
+			else
+			{
+				missing.Add(pair.Key);
 			}
 		}
 
-		return result;
+		if (missing.Count == 0)
+		{
+			return sources;
+		}
+
+		List<string> names = missing.Select(id => doc.GetElement(id)?.Name ?? id.ToString()).ToList();
+		var ask = new TaskDialog(Title)
+		{
+			MainInstruction = missing.Count == 1
+				? $"No se encuentra el archivo del PDF \"{names[0]}\""
+				: $"No se encuentran los archivos de {missing.Count} PDF",
+			MainContent = (missing.Count > 1 ? string.Join("\n", names.Take(6).Select(n => "• " + n)) + (names.Count > 6 ? "\n…" : string.Empty) + "\n\n" : string.Empty) +
+				"Se buscó en la ruta guardada en Revit, junto al modelo, en Descargas, Escritorio y Documentos. " +
+				"El PDF probablemente se vinculó desde otro equipo o carpeta.\n\n" +
+				"Sin el archivo se puede explotar la imagen que Revit guarda del PDF (se vectoriza: líneas, rellenos y " +
+				"textos por OCR; menos exacto que el PDF original).",
+			CommonButtons = TaskDialogCommonButtons.None
+		};
+		ask.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Buscar los archivos…",
+			"Elige el PDF; los demás se buscan en la misma carpeta.");
+		ask.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Explotar la imagen guardada en Revit",
+			"No necesita el archivo original.");
+		ask.AddCommandLink(TaskDialogCommandLinkId.CommandLink3, "Omitir estos PDF");
+		TaskDialogResult choice = ask.Show();
+		if (choice == TaskDialogResult.CommandLink2)
+		{
+			sources.UseEmbeddedImage.UnionWith(missing);
+			return sources;
+		}
+
+		if (choice != TaskDialogResult.CommandLink1)
+		{
+			return sources;
+		}
+
+		// Buscar a mano: después de cada archivo elegido, su carpeta resuelve los demás que estén ahí.
+		string lastFolder = null;
+		foreach (ElementId typeId in missing)
+		{
+			if (sources.Paths.ContainsKey(typeId) || !(doc.GetElement(typeId) is ImageType type))
+			{
+				continue;
+			}
+
+			if (lastFolder != null && locator.Find(type, samples[typeId]) is string auto)
+			{
+				sources.Paths[typeId] = auto;
+				continue;
+			}
+
+			string stored = PdfFileLocator.StoredPath(doc, type);
+			using var dialog = new OpenFileDialog
+			{
+				Title = $"Selecciona el PDF de \"{type.Name}\"",
+				Filter = "Archivos PDF (*.pdf)|*.pdf",
+				CheckFileExists = true,
+				FileName = SafeFileName(stored) ?? string.Empty,
+				InitialDirectory = lastFolder ?? string.Empty
+			};
+			if (dialog.ShowDialog() != DialogResult.OK)
+			{
+				continue;
+			}
+
+			string file = dialog.FileName;
+			if (!PdfFileLocator.Matches(file, type, samples[typeId]))
+			{
+				var check = new TaskDialog(Title)
+				{
+					MainInstruction = "El PDF elegido no coincide con el insertado",
+					MainContent = $"\"{Path.GetFileName(file)}\" no tiene la página {PdfExploder.PageOf(type)} o sus proporciones son " +
+						"distintas a las de la imagen en Revit (puede ser otra versión del plano). ¿Usarlo igual?",
+					CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No,
+					DefaultButton = TaskDialogResult.No
+				};
+				if (check.Show() != TaskDialogResult.Yes)
+				{
+					continue;
+				}
+			}
+
+			sources.Paths[typeId] = file;
+			PdfFileLocator.Remember(file);
+			lastFolder = Path.GetDirectoryName(file);
+			locator.AddFolder(lastFolder);
+		}
+
+		return sources;
 	}
+
+	private static string SafeFileName(string path)
+	{
+		try
+		{
+			return string.IsNullOrEmpty(path) ? null : Path.GetFileName(path);
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+}
+
+/// <summary>De dónde sale cada PDF a explotar: su archivo, o la imagen que Revit guarda de él.</summary>
+internal sealed class PdfSources
+{
+	public Dictionary<ElementId, string> Paths = new Dictionary<ElementId, string>();
+
+	public HashSet<ElementId> UseEmbeddedImage = new HashSet<ElementId>();
 }
 
 /// <summary>Disponible siempre que haya un modelo abierto (si no hay PDF en la vista, ofrece importar uno).</summary>

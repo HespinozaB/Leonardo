@@ -116,7 +116,7 @@ internal static class PdfFinder
 			return "No hay PDF que explotar (los archivos sin instancias no se pueden explotar).";
 		}
 
-		Dictionary<ElementId, string> paths = ExplodePdfCommand.ResolvePaths(doc, instances);
+		PdfSources sources = ExplodePdfCommand.ResolvePaths(doc, instances);
 		var stats = new PdfExplodeStats();
 		var exploded = new List<ElementId>();
 		double shortCurve = app.Application.ShortCurveTolerance;
@@ -132,27 +132,9 @@ internal static class PdfFinder
 		{
 			foreach (ImageInstance instance in instances)
 			{
-				string name = doc.GetElement(instance.GetTypeId())?.Name ?? instance.Id.ToString();
-				if (!paths.TryGetValue(instance.GetTypeId(), out string path))
+				if (ExplodePdfCommand.ExplodeInstance(doc, instance, sources, shortCurve, stats))
 				{
-					stats.Failed.Add(name + " (archivo no encontrado)");
-					continue;
-				}
-
-				try
-				{
-					if (PdfExploder.ExplodeImage(doc, instance, path, shortCurve, stats))
-					{
-						exploded.Add(instance.Id);
-					}
-					else
-					{
-						stats.Failed.Add(name);
-					}
-				}
-				catch (Exception ex)
-				{
-					stats.Failed.Add(name + " (" + ex.Message + ")");
+					exploded.Add(instance.Id);
 				}
 			}
 		}
